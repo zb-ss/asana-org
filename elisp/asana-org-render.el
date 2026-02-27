@@ -1,0 +1,511 @@
+;;; asana-org-render.el --- Org rendering helpers for Asana tasks  -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2025  Asana Org contributors
+;; Author: Asana Org Team
+;; URL: https://github.com/zb-ss/asana-org
+;; Version: 0.1.0
+;; Package-Requires: ((emacs "28.1"))
+;; Keywords: org, asana, rendering
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
+;;; Commentary:
+;; Functions for rendering Asana tasks as Org entries and
+;; displaying preview/diff buffers.
+;; Follows JSON contract defined in docs/cli-contract.md
+
+;;; Code:
+
+(require 'org)
+(require 'org-element)
+(require 'seq)
+
+;; Forward declarations to avoid circular require
+;; Functions from asana-org.el
+(declare-function asana-org-get-project-file "asana-org")
+(declare-function asana-org-log-info "asana-org")
+(declare-function asana-org-log-warn "asana-org")
+(declare-function asana-org-get-task-file "asana-org")
+(declare-function asana-org-ensure-root-directory "asana-org")
+
+;; Variables/constants from asana-org.el
+(defvar asana-org-prop-gid)
+(defvar asana-org-prop-permalink)
+(defvar asana-org-prop-remote-modified-at)
+(defvar asana-org-prop-project-gid)
+(defvar asana-org-prop-section-gid)
+(defvar asana-org-prop-local-hash)
+(defvar asana-org-comments-drawer)
+(defvar asana-org-root-directory)
+(defvar asana-org-confirm-threshold)
+(defvar asana-org-preview-buffer-name)
+
+;;;; Rendering Constants
+
+(defconst asana-org-render-todo-keywords
+  '(("TODO" . "In Progress")
+    ("DONE" . "Completed"))
+  "Mapping of Asana completion status to Org TODO keywords.")
+
+(defconst asana-org-render-priority-map
+  '(("high" . ?A)
+    ("medium" . ?B)
+    ("low" . ?C)
+    ("none" . nil))
+  "Mapping of Asana priority to Org priority.")
+
+;;;; Task Rendering
+
+(defun asana-org-render--task-to-org (task)
+  "Convert Asana TASK data to Org heading text and properties.
+Returns (heading-text . properties-alist)."
+  (let* ((gid (alist-get 'gid task))
+         (name (alist-get 'name task))
+         (permalink (alist-get 'permalink_url task))
+         (completed (alist-get 'completed task))
+         (start-on (alist-get 'start_on task))
+         (due-on (alist-get 'due_on task))
+         (due-at (alist-get 'due_at task))
+         (notes (alist-get 'notes task))
+         (modified-at (alist-get 'modified_at task))
+         (memberships (alist-get 'memberships task))
+         ;; memberships is a list of objects: [{"project": {"gid": "..."}, "section": {"gid": "..."}}]
+         ;; Extract project_gid and section_gid from first membership
+         (first-membership (and memberships (listp memberships) (car-safe memberships)))
+         (project-obj (and first-membership (alist-get 'project first-membership)))
+         (section-obj (and first-membership (alist-get 'section first-membership)))
+         (project-gid (and project-obj (alist-get 'gid project-obj)))
+         (section-gid (and section-obj (alist-get 'gid section-obj))))
+    (cons
+     (if completed "DONE" "TODO")
+     (list (cons asana-org-prop-gid gid)
+           (cons asana-org-prop-permalink permalink)
+           (cons asana-org-prop-remote-modified-at modified-at)
+           (cons asana-org-prop-project-gid project-gid)
+           (cons asana-org-prop-section-gid section-gid)
+           (cons "SCHEDULED" start-on)
+           (cons "DEADLINE" (or due-at due-on))
+           (cons "DESCRIPTION" notes)
+           (cons asana-org-prop-local-hash (asana-org-render--compute-hash task))))))
+
+(defun asana-org-render--compute-hash (task)
+  "Compute hash for TASK content to detect changes."
+  (secure-hash 'sha256 (json-serialize task)))
+
+(defun asana-org-render--format-timestamp (timestamp)
+  "Format TIMESTAMP for Org date entry."
+  (when timestamp
+    (if (string-match-p "T" timestamp)
+        (format "<%s>" (substring timestamp 0 19))
+      (format "<%s>" timestamp))))
+
+(defun asana-org-render--format-scheduled (start-on)
+  "Format START_ON for Org SCHEDULED."
+  (when start-on
+    (format "SCHEDULED: <%s>" start-on)))
+
+(defun asana-org-render--format-deadline (due-on due-at)
+  "Format DUE-ON/DUE-AT for Org DEADLINE."
+  (when (or due-on due-at)
+    (format "DEADLINE: %s"
+            (asana-org-render--format-timestamp (or due-at due-on)))))
+
+(defun asana-org-render--format-properties (properties)
+  "Format PROPERTIES alist as Org property drawer."
+  (when properties
+    (concat ":PROPERTIES:\n"
+            (mapconcat (lambda (prop)
+                         (format ":%s: %s" (car prop) (cdr prop)))
+                       properties "\n")
+            ":END:\n")))
+
+(defun asana-org-render--format-comments (comments)
+  "Format COMMENTS list as Org drawer."
+  (when comments
+    (concat ":" asana-org-comments-drawer ":\n"
+            (mapconcat (lambda (comment)
+                         (let ((author (alist-get 'created_by comment))
+                               (text (alist-get 'text comment))
+                               (created (alist-get 'created_at comment)))
+                           (format "- [%s] %s: %s"
+                                   (substring created 0 10)
+                                   (if (stringp author) author "unknown")
+                                   text)))
+                       comments "\n")
+            ":END:\n")))
+
+(defun asana-org-render-task-entry (task)
+  "Render Asana TASK as Org entry string."
+  (let* ((parsed (asana-org-render--task-to-org task))
+         (todo (car parsed))
+         (props (cdr parsed))
+         (name (alist-get 'name task))
+         (start-on (alist-get 'start_on task))
+         (due-on (alist-get 'due_on task))
+         (due-at (alist-get 'due_at task))
+         (notes (alist-get 'notes task))
+         (stories (alist-get 'stories task)))
+    (concat
+     (format "* %s %s\n" todo name)
+     (asana-org-render--format-properties props)
+     (when start-on (format "%s\n" (asana-org-render--format-scheduled start-on)))
+     (when (or due-on due-at) (format "%s\n" (asana-org-render--format-deadline due-on due-at)))
+     (when notes
+       (concat "\n" notes "\n"))
+     (when stories
+       (asana-org-render--format-comments stories)))))
+
+(defun asana-org-render-tasks (tasks)
+  "Render TASKS list to Org files per project.
+Creates or updates Org files in `asana-org-root-directory'."
+  (let* ((by-project (seq-group-by
+                      (lambda (task)
+                        (let* ((memberships (alist-get 'memberships task))
+                               ;; memberships is a list of objects: [{"project": {"gid": "..."}, ...}]
+                               ;; Extract project gid from first membership
+                               (first-membership (and memberships (listp memberships) (car-safe memberships)))
+                               (project-obj (and first-membership (alist-get 'project first-membership)))
+                               (project-gid (and project-obj (alist-get 'gid project-obj))))
+                          (or project-gid "my-tasks")))
+                      tasks))
+         (updated-files nil))
+    (pcase-dolist (`(,project-gid . ,project-tasks) by-project)
+      (let* ((file (asana-org-get-project-file project-gid))
+             (existing-tasks (when (file-exists-p file)
+                               (asana-org-render--parse-existing-tasks file)))
+             (rendered (mapconcat #'asana-org-render-task-entry project-tasks "\n"))
+             (content (concat "#+TITLE: Asana Project " project-gid "\n"
+                              "#+FILETAGS: :asana:\n\n"
+                              rendered "\n")))
+        ;; Use with-temp-file to safely write content to file
+        (with-temp-file file
+          (insert content))
+        (push file updated-files)
+        (asana-org-log-info "Wrote %d tasks to %s" (length project-tasks) file)))
+    updated-files))
+
+(defun asana-org-render--parse-existing-tasks (file)
+  "Parse existing tasks from ORG-FILE.
+Returns list of task GIDs found."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (goto-char (point-min))
+    (let ((gids nil))
+      (while (re-search-forward (concat "^:ASANA_GID: \\(" asana-org-prop-gid "\\|[0-9]+\\)") nil t)
+        (push (match-string 1) gids))
+      gids)))
+
+;;;; Preview Rendering (JSON Contract v1)
+
+(defun asana-org-render-preview (preview-response)
+  "Render PREVIEW-RESPONSE to preview buffer.
+PREVIEW-RESPONSE follows sync preview output schema from cli-contract.md.
+
+Sections (in order):
+1. Blocked conflicts (top - cannot apply)
+2. Warnings
+3. Proposed mutations grouped by type (task_move, comment_add)"
+  (let* ((status (alist-get 'status preview-response))
+         (data (alist-get 'data preview-response))
+         (pending-changes (or (alist-get 'pending_changes data) '()))
+         (version (alist-get 'version preview-response))
+         (command (alist-get 'command preview-response))
+         (buffer (get-buffer-create asana-org-preview-buffer-name)))
+    
+    ;; Classify changes
+    (let ((blocked-changes (seq-filter
+                           (lambda (change)
+                             (let ((conflict (alist-get 'conflict change)))
+                               (and conflict
+                                    (alist-get 'blocking conflict))))
+                           pending-changes))
+          (non-blocked-changes (seq-filter
+                               (lambda (change)
+                                 (let ((conflict (alist-get 'conflict change)))
+                                   (or (not conflict)
+                                       (not (alist-get 'blocking conflict)))))
+                               pending-changes))
+          ;; Extract warnings (could be in data.warnings or embedded in changes)
+          (warnings (or (alist-get 'warnings data) '())))
+      
+      (with-current-buffer buffer
+        (erase-buffer)
+        (insert "#+TITLE: Asana Org - Change Preview\n")
+        (insert "#+OPTIONS: toc:nil num:nil\n")
+        (insert (format "#+VERSION: %s\n" version))
+        (insert (format "#+COMMAND: %s\n" command))
+        (insert "\n")
+        
+        ;; Summary header
+        (insert "* Summary\n")
+        (insert (format "Total changes: %d\n" (length pending-changes)))
+        (insert (format "Blocked: %d\n" (length blocked-changes)))
+        (insert (format "Ready to apply: %d\n\n" (length non-blocked-changes)))
+        
+        ;; Section 1: Blocked Conflicts (TOP - most important)
+        (when blocked-changes
+          (insert "* ⚠ BLOCKED CONFLICTS (Cannot Apply)\n")
+          (insert "These changes have conflicts that must be resolved:\n\n")
+          (dolist (change blocked-changes)
+            (asana-org-render-preview-conflict change))
+          (insert "\n"))
+        
+        ;; Section 2: Warnings
+        (when warnings
+          (insert "* ⚡ Warnings\n")
+          (dolist (warning warnings)
+            (insert (format "- %s\n" warning)))
+          (insert "\n"))
+        
+        ;; Section 3: Proposed Mutations (grouped by type)
+        ;; Note: type from JSON is a string, not a symbol
+        (when non-blocked-changes
+          (let* ((task-moves (seq-filter
+                              (lambda (c)
+                                (string= (alist-get 'type c) "task_move"))
+                              non-blocked-changes))
+                 (comment-adds (seq-filter
+                                (lambda (c)
+                                  (string= (alist-get 'type c) "comment_add"))
+                                non-blocked-changes))
+                 (other-changes (seq-filter
+                                 (lambda (c)
+                                   (let ((type (alist-get 'type c)))
+                                     (not (or (string= type "task_move")
+                                              (string= type "comment_add")))))
+                                 non-blocked-changes)))
+            
+            ;; Task Moves
+            (when task-moves
+              (insert "* → Task Moves\n")
+              (insert (format "%d task(s) to move:\n\n" (length task-moves)))
+              (dolist (change task-moves)
+                (asana-org-render-preview-mutation change))
+              (insert "\n"))
+            
+            ;; Comment Additions
+            (when comment-adds
+              (insert "* 💬 Comments to Add\n")
+              (insert (format "%d comment(s) to add:\n\n" (length comment-adds)))
+              (dolist (change comment-adds)
+                (asana-org-render-preview-mutation change))
+              (insert "\n"))
+            
+            ;; Other changes
+            (when other-changes
+              (insert "* ⚡ Other Changes\n")
+              (insert (format "%d other change(s):\n\n" (length other-changes)))
+              (dolist (change other-changes)
+                (asana-org-render-preview-mutation change))
+              (insert "\n"))))
+        
+        ;; Instructions footer
+        (insert "* Instructions\n")
+        (insert "To apply non-blocked changes:\n")
+        (insert "  M-x asana-org-sync-apply\n\n")
+        (insert (format "Confirmation required for >%d changes.\n" asana-org-confirm-threshold))
+        (insert "Blocked changes require running `asana-org-sync-pull' to resolve conflicts.\n")
+        
+        (goto-char (point-min))
+        (org-mode)
+        (view-mode +1))
+      (pop-to-buffer buffer))))
+
+(defun asana-org-render-preview-conflict (change)
+  "Render a single BLOCKED CHANGE entry.
+CHANGE has conflict.detected=true and conflict.blocking=true."
+  (let* ((id (alist-get 'id change))
+         (type (alist-get 'type change))
+         (description (alist-get 'description change))
+         (conflict (alist-get 'conflict change))
+         (conflict-reason (alist-get 'reason conflict))
+         (current-state (alist-get 'current_state change))
+         (proposed-state (alist-get 'proposed_state change)))
+    
+    (insert (format "** ⚠ %s (ID: %s)\n" (asana-org-render-preview--type-label type) id))
+    (insert (format "   Description: %s\n" description))
+    (insert (format "   Reason: %s\n\n" conflict-reason))
+    
+    ;; Show state comparison if available
+    (when current-state
+      (insert "   Current state:\n")
+      (asana-org-render-preview--format-state current-state "     "))
+    
+    (when proposed-state
+      (insert "   Proposed state:\n")
+      (asana-org-render-preview--format-state proposed-state "     "))
+    
+    (insert "\n")))
+
+(defun asana-org-render-preview-mutation (change)
+  "Render a single PROPOSED CHANGE entry (non-blocked mutation)."
+  (let* ((id (alist-get 'id change))
+         (type (alist-get 'type change))
+         (description (alist-get 'description change))
+         (proposed-state (alist-get 'proposed_state change)))
+    
+    (insert (format "** %s (ID: %s)\n"
+                    (asana-org-render-preview--type-label type)
+                    id))
+    (insert (format "   %s\n\n" description))
+    
+    ;; Show proposed state details
+    (when proposed-state
+      (asana-org-render-preview--format-state proposed-state "   "))
+    
+    (insert "\n")))
+
+(defun asana-org-render-preview--format-state (state indent)
+  "Format STATE alist with INDENT prefix."
+  (dolist (pair state)
+    (let ((key (car pair))
+          (value (cdr pair)))
+      (when value
+        (insert (format "%s%s: %s\n" indent key value))))))
+
+(defun asana-org-render-preview--type-label (type)
+  "Get human-readable label for mutation TYPE.
+TYPE is a string from JSON (e.g., \"task_move\", \"comment_add\")."
+  (pcase type
+    ("task_move" "Move Task")
+    ("comment_add" "Add Comment")
+    ("status_change" "Change Status")
+    ("date_change" "Change Dates")
+    (_ (if (symbolp type) (symbol-name type) type))))
+
+;;;; Apply Result Rendering
+
+(defun asana-org-render-apply-result (apply-response)
+  "Render APPLY-RESPONSE results to buffer.
+Response shape per cli-contract.md:
+- status: success | partial | error
+- data.results: array of {idempotency_key, status, details}"
+  (let* ((status (alist-get 'status apply-response))
+         (data (alist-get 'data apply-response))
+         ;; Results are nested in data.results per contract
+         (results (or (alist-get 'results data) 
+                      (alist-get 'results apply-response)))
+         (buffer (get-buffer-create "*Asana Org Apply Results*")))
+    
+    (with-current-buffer buffer
+      (erase-buffer)
+      (insert "#+TITLE: Asana Org - Apply Results\n")
+      (insert "#+OPTIONS: toc:nil num:nil\n\n")
+      
+      (let ((applied (seq-filter (lambda (r)
+                                   (string= (alist-get 'status r) "applied"))
+                                 results))
+            (conflicts (seq-filter (lambda (r)
+                                     (string= (alist-get 'status r) "conflict"))
+                                   results))
+            (errors (seq-filter (lambda (r)
+                                  (string= (alist-get 'status r) "error"))
+                                results)))
+        
+        ;; Status header
+        (insert "* Summary\n")
+        (insert (format "Status: %s\n" (pcase status
+                                         ("partial" "⚠ Partial Success")
+                                         ("error" "✗ Error")
+                                         (_ "✓ Success"))))
+        (insert (format "Applied: %d\n" (length applied)))
+        (insert (format "Conflicts: %d\n" (length conflicts)))
+        (insert (format "Errors: %d\n\n" (length errors)))
+        
+        (when applied
+          (insert "* ✓ Applied\n")
+          (dolist (r applied)
+            (let ((details (alist-get 'details r)))
+              (insert (format "- %s: %s\n"
+                              (alist-get 'idempotency_key r)
+                              (or (alist-get 'action details) "completed")))))
+          (insert "\n"))
+        
+        (when conflicts
+          (insert "* ⚠ Conflicts\n")
+          (dolist (r conflicts)
+            (let ((details (alist-get 'details r)))
+              (insert (format "- %s: %s\n"
+                              (alist-get 'idempotency_key r)
+                              (or (alist-get 'reason details) "conflict detected")))))
+          (insert "\n"))
+        
+        (when errors
+          (insert "* ✗ Errors\n")
+          (dolist (r errors)
+            (let ((details (alist-get 'details r)))
+              (insert (format "- %s: %s\n"
+                              (alist-get 'idempotency_key r)
+                              (or (alist-get 'message details) "error")))))
+          (insert "\n")))
+      
+      (goto-char (point-min))
+      (org-mode)
+      (view-mode +1))
+    (pop-to-buffer buffer)))
+
+;;;; AI Summary Rendering
+
+(defvar asana-org-ai-summary-buffer-name "*Asana Org AI Summary*"
+  "Buffer name for AI summary output.")
+
+(defun asana-org-render-ai-summary (summary-data)
+  "Render AI SUMMARY-DATA to dedicated buffer."
+  (let* ((data (alist-get 'data summary-data))
+         (summary (alist-get 'summary data))
+         (digest (alist-get 'digest data))
+         (tasks (alist-get 'tasks data))
+         (buffer (get-buffer-create asana-org-ai-summary-buffer-name)))
+    (with-current-buffer buffer
+      (erase-buffer)
+      (insert "#+TITLE: Asana Org - AI Summary\n")
+      (insert "#+OPTIONS: toc:t num:t\n")
+      (insert "\n")
+      
+      (when summary
+        (insert "* Summary\n")
+        (insert summary "\n\n"))
+      
+      (when digest
+        (insert "* Discussion Digest\n")
+        (insert digest "\n\n"))
+      
+      (when tasks
+        (insert "* Task Details\n")
+        (dolist (task tasks)
+          (insert (format "** %s\n" (alist-get 'name task)))
+          (insert (format "   - Status: %s\n"
+                          (if (alist-get 'completed task) "Completed" "In Progress")))
+          (insert (format "   - Due: %s\n" (or (alist-get 'due_on task) "Not set")))
+          (insert "\n")))
+      
+      (insert "* Note\n")
+      (insert "AI output is advisory.  All changes require manual approval via preview/apply.\n")
+      
+      (goto-char (point-min))
+      (org-mode)
+      (view-mode +1))
+    (pop-to-buffer buffer)))
+
+;;;; Utility Functions
+
+(defun asana-org-render-refile-task (task-gid target-file)
+  "Refile TASK-GID to TARGET-FILE."
+  (let* ((source-file (asana-org-get-task-file task-gid)))
+    (when source-file
+      (with-current-buffer (find-file source-file)
+        (goto-char (point-min))
+        (when (re-search-forward (concat ":ASANA_GID: " (regexp-quote task-gid)) nil t)
+          (org-cut-subtree))
+        (save-buffer)
+        (kill-buffer))
+      (with-current-buffer (find-file target-file)
+        (goto-char (point-max))
+        (yank)
+        (org-cut-subtree)
+        (save-buffer)
+        (kill-buffer))
+      (asana-org-log-info "Refiled task %s from %s to %s" task-gid source-file target-file))))
+
+(provide 'asana-org-render)
+
+;;;; asana-org-render.el ends here

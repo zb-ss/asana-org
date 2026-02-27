@@ -1,0 +1,128 @@
+name: MELPA Validation
+
+on:
+  release:
+    types: [published]
+  push:
+    tags:
+      - 'v*'
+  pull_request:
+    paths:
+      - 'elisp/**'
+      - '.github/workflows/melpa-validation.yml'
+
+jobs:
+  byte-compile:
+    name: Byte Compile & Lint Emacs Package
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        emacs-version:
+          - 28.2
+          - 29.4
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Emacs
+        uses: jcs090218/setup-emacs@master
+        with:
+          version: ${{ matrix.emacs-version }}
+
+      - name: Install dependencies
+        run: |
+          emacs --batch --eval "(progn (require 'package) (add-to-list 'package-archives '(\"melpa\" . \"https://melpa.org/packages/\") t) (package-initialize) (package-refresh-contents) (package-install 'transient))"
+
+      - name: Byte compile
+        run: |
+          cd elisp
+          emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (batch-byte-compile \"asana-org.el\" \"asana-org-sync.el\" \"asana-org-render.el\" \"asana-org-transient.el\"))"
+
+      - name: Run checkdoc
+        run: |
+          cd elisp
+          emacs --batch --eval "
+            (progn
+              (add-to-list 'load-path default-directory)
+              (require 'checkdoc)
+              (setq checkdoc-force-docstrings-flag t)
+              (setq checkdoc-verb-check-experimental-flag nil)
+              (dolist (file '(\"asana-org.el\" \"asana-org-sync.el\" \"asana-org-render.el\" \"asana-org-transient.el\"))
+                (message \"Checking %s...\" file)
+                (checkdoc-file file)))
+          "
+
+      - name: Package Lint
+        run: |
+          cd elisp
+          emacs --batch --eval "
+            (progn
+              (require 'package)
+              (add-to-list 'package-archives '(\"melpa\" . \"https://melpa.org/packages/\") t)
+              (package-initialize)
+              (package-refresh-contents)
+              (package-install 'package-lint)
+              (dolist (file '(\"asana-org.el\" \"asana-org-sync.el\" \"asana-org-render.el\" \"asana-org-transient.el\"))
+                (message \"Linting %s...\" file)
+                (with-current-buffer (find-file-noselect file)
+                  (package-lint-current-buffer))))
+          "
+
+  melpa-readiness-check:
+    name: Check MELPA Recipe Readiness
+    runs-on: ubuntu-latest
+    needs: byte-compile
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check package header requirements
+        run: |
+          echo "Checking package headers..."
+          errors=0
+          for file in elisp/asana-org.el elisp/asana-org-sync.el elisp/asana-org-render.el elisp/asana-org-transient.el; do
+            echo "Checking $file..."
+            if grep -q ";; URL:" "$file"; then
+              echo "  ✓ URL header present"
+            else
+              echo "  ✗ Missing URL header"
+              errors=$((errors + 1))
+            fi
+            if grep -q ";; Version:" "$file"; then
+              echo "  ✓ Version header present"
+            else
+              echo "  ✗ Missing Version header"
+              errors=$((errors + 1))
+            fi
+            if grep -q ";; Package-Requires:" "$file"; then
+              echo "  ✓ Package-Requires header present"
+            else
+              echo "  ✗ Missing Package-Requires header"
+              errors=$((errors + 1))
+            fi
+          done
+          if [ $errors -gt 0 ]; then
+            echo ""
+            echo "❌ Found $errors missing header(s)"
+            exit 1
+          fi
+          echo ""
+          echo "✅ All package headers present"
+
+      - name: Check for recipe file
+        run: |
+          if [ -f "melpa/recipe" ]; then
+            echo "✓ MELPA recipe file exists"
+            cat melpa/recipe
+          else
+            echo "ℹ️  No MELPA recipe file found (expected for initial submission)"
+            echo ""
+            echo "To submit to MELPA for the first time:"
+            echo "1. Fork https://github.com/melpa/melpa"
+            echo "2. Create file: recipes/asana-org"
+            echo "3. Content:"
+            echo "   (asana-org :fetcher github :repo \"zb-ss/asana-org\" :files (\"elisp/*.el\"))"
+            echo "4. Submit PR to melpa/melpa"
+          fi

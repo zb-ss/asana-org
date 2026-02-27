@@ -1,0 +1,31 @@
+# Environment/Secrets
+.env
+.env.*
+
+# Python
+bridge/.venv/
+bridge/__pycache__/
+bridge/*.py[cod]
+bridge/*$py.class
+bridge/.pytest_cache/
+bridge/.mypy_cache/
+bridge/.ruff_cache/
+bridge/build/
+bridge/dist/
+bridge/*.egg-info/
+bridge/bridge.db*
+
+# Emacs
+elisp/*.elc
+*~
+\#*\#
+
+# IDE/OS
+.vscode/
+.idea/
+.DS_Store
+
+# Local plans/scratch
+plans/
+/bridge/src/asana_org_bridge/__pycache__/
+/bridge/tests/__pycache__/
