@@ -245,7 +245,7 @@ Uses synchronous call-process to avoid async output race conditions."
                             (apply #'call-process
                                    (asana-org-get-bridge-path)
                                    input-file
-                                   (current-buffer)
+                                   '(t nil)  ; stdout to buffer, discard stderr
                                    nil
                                    args)))
                   (delete-file input-file)))
@@ -254,7 +254,7 @@ Uses synchronous call-process to avoid async output race conditions."
                   (apply #'call-process
                          (asana-org-get-bridge-path)
                          nil
-                         (current-buffer)
+                         '(t nil)  ; stdout to buffer, discard stderr
                          nil
                          args)))
           (setq output (string-trim (buffer-string))))
@@ -316,7 +316,7 @@ only sees current output, not stale data from previous calls."
                         (apply #'call-process
                                (asana-org-get-bridge-path)
                                (when stdin-data input-file)
-                               (current-buffer)
+                               '(t nil)  ; stdout to buffer, discard stderr
                                nil
                                args))
                   (setq output (string-trim (buffer-string)))))
@@ -422,21 +422,24 @@ Searches project files for tasks with matching ASANA_GID property."
 ;;;###autoload
 (defun asana-org-sync-pull (&optional project-gid)
   "Pull Asana My Tasks and refresh Org mirror.
-If PROJECT-GID is provided, only pull that project."
+If PROJECT-GID is provided, only pull that project.
+By default pulls only incomplete tasks."
   (interactive)
   (asana-org-log-info "Starting pull sync (project: %s)" (or project-gid "all"))
   (asana-org-ensure-root-directory)
 
-  (let* ((args (if project-gid (list "sync-pull" "--json" "--project" project-gid) '("sync-pull" "--json")))
-         (response (apply #'asana-org-call-json args))
-         (data (alist-get 'data response))
-         (tasks (alist-get 'tasks data))
-         (pulled-count (length tasks)))
-    (asana-org-log-info "Pulled %d tasks" pulled-count)
-    (message "Asana Org: Pulled %d tasks" pulled-count)
-    (when (> pulled-count 0)
-      (asana-org-render-tasks tasks))
-    response))
+  (let* ((args (list "sync-pull" "--json" "--incomplete-only")))
+    (when project-gid
+      (setq args (append args (list "--project" project-gid))))
+    (let* ((response (apply #'asana-org-call-json args))
+           (data (alist-get 'data response))
+           (tasks (alist-get 'tasks data))
+           (pulled-count (length tasks)))
+      (asana-org-log-info "Pulled %d tasks" pulled-count)
+      (message "Asana Org: Pulled %d tasks" pulled-count)
+      (when (> pulled-count 0)
+        (asana-org-render-tasks tasks))
+      response)))
 
 ;;;###autoload
 (defun asana-org-sync-preview ()
