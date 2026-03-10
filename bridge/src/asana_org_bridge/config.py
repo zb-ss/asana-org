@@ -89,6 +89,12 @@ class SyncConfig(BaseSettings):
         description="Mutations requiring confirmation",
     )
 
+    # Workspace GID (required for "My Tasks" pull)
+    workspace_gid: str | None = Field(
+        default=None,
+        description="Asana workspace GID (required for pulling My Tasks)",
+    )
+
     # Mock mode for testing
     mock_data: bool = Field(
         default=False,

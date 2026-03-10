@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from asana_org_bridge.asana_client import AsanaClient, create_asana_client
 from asana_org_bridge.auth import AuthManager
+from asana_org_bridge.config import get_settings
 from asana_org_bridge.db import Database
 from asana_org_bridge.logging_config import get_logger
 from asana_org_bridge.models import (
@@ -275,7 +276,11 @@ class SyncEngine:
                     client = self.asana_client
                     if client:
                         logger.info("fetching_tasks_from_asana")
-                        asana_tasks = client.get_my_tasks(limit=limit or 100)
+                        workspace_gid = get_settings().sync.workspace_gid
+                        asana_tasks = client.get_my_tasks(
+                            workspace_gid=workspace_gid,
+                            limit=limit or 100,
+                        )
                         # Convert AsanaTask objects to dict format for processing
                         tasks = []
                         for asana_task in asana_tasks:

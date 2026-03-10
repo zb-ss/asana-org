@@ -103,6 +103,7 @@ def doctor() -> None:
         settings = get_settings()
         console.print(f"  Database: {settings.database.db_path}")
         console.print(f"  Auth source: {settings.auth.auth_source}")
+        console.print(f"  Workspace GID: {settings.sync.workspace_gid or '(not set)'}")
         console.print(f"  Mock data mode: {settings.sync.mock_data}")
         console.print(f"  Log level: {settings.logging.level}")
         console.print("  ✓ Configuration loaded")
