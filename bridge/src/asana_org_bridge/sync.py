@@ -245,12 +245,16 @@ class SyncEngine:
         self,
         force: bool = False,
         limit: int | None = None,
+        incomplete_only: bool = False,
+        modified_since: str | None = None,
     ) -> PullResult:
         """Pull tasks from Asana and update local cache.
 
         Args:
             force: Force pull even if recently synced
             limit: Limit number of tasks to pull
+            incomplete_only: Only pull incomplete tasks
+            modified_since: Only pull tasks modified after this ISO date
 
         Returns:
             PullResult with statistics
@@ -280,6 +284,8 @@ class SyncEngine:
                         asana_tasks = client.get_my_tasks(
                             workspace_gid=workspace_gid,
                             limit=limit or 100,
+                            completed_since="now" if incomplete_only else None,
+                            modified_since=modified_since,
                         )
                         # Convert AsanaTask objects to dict format for processing
                         tasks = []

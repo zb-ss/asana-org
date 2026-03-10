@@ -219,6 +219,17 @@ def sync_pull(
         "--include-comments",
         help="Include task comments/stories (reserved for future use)",
     ),
+    incomplete_only: bool = typer.Option(
+        False,
+        "--incomplete-only",
+        "-i",
+        help="Only pull incomplete (not yet completed) tasks",
+    ),
+    modified_since: str | None = typer.Option(
+        None,
+        "--modified-since",
+        help="Only pull tasks modified after this ISO date (e.g. 2025-01-01)",
+    ),
     json_output: bool = typer.Option(
         False,
         "--json",
@@ -247,8 +258,13 @@ def sync_pull(
             use_mock=use_mock,
         )
 
-        # Run pull (project and include_comments reserved for future expansion)
-        result = engine.pull(force=force, limit=limit)
+        # Run pull
+        result = engine.pull(
+            force=force,
+            limit=limit,
+            incomplete_only=incomplete_only,
+            modified_since=modified_since,
+        )
 
         if json_output:
             # Output JSON envelope with tasks array for Elisp compatibility

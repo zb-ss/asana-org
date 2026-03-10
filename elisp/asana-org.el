@@ -223,33 +223,41 @@ Raises `asana-org-missing-binary' if not found."
 (defun asana-org--run-command (args &optional input)
   "Run bridge command with ARGS and optional INPUT.
 Returns (EXIT-CODE . OUTPUT).
-Clears the process buffer before each invocation to ensure JSON parse
-only sees current output, not stale data from previous calls."
+Uses synchronous call-process to avoid async output race conditions."
   (asana-org-verify-bridge)
   (asana-org-log-info "Running: asana-org-bridge %s"
                       (mapconcat #'shell-quote-argument
                                  (asana-org--sanitize-command-args args)
                                  " "))
   (let* ((default-directory (or asana-org-root-directory default-directory))
-         (process-connection-type nil)  ; Use pipe, not pty
          (exit-code nil)
          (output nil))
     (condition-case err
-        (let ((proc (apply #'start-process "asana-org-bridge"
-                           asana-org-process-buffer-name
-                           (asana-org-get-bridge-path) args)))
-          ;; Clear the process buffer before collecting output to ensure
-          ;; we only parse the current command's response, not stale data
-          (with-current-buffer (process-buffer proc)
-            (erase-buffer))
-          (when input
-            (process-send-string proc input)
-            (process-send-eof proc))
-          (while (process-live-p proc)
-            (accept-process-output proc 0.1))
-          (setq exit-code (process-exit-status proc))
-          (with-current-buffer (process-buffer proc)
-            (setq output (string-trim (buffer-string)))))
+        (with-temp-buffer
+          (if input
+              ;; With stdin: write input to temp file, use as stdin
+              (let ((input-file (make-temp-file "asana-org-input")))
+                (unwind-protect
+                    (progn
+                      (with-temp-file input-file
+                        (insert input))
+                      (setq exit-code
+                            (apply #'call-process
+                                   (asana-org-get-bridge-path)
+                                   input-file
+                                   (current-buffer)
+                                   nil
+                                   args)))
+                  (delete-file input-file)))
+            ;; Without stdin: simple synchronous call
+            (setq exit-code
+                  (apply #'call-process
+                         (asana-org-get-bridge-path)
+                         nil
+                         (current-buffer)
+                         nil
+                         args)))
+          (setq output (string-trim (buffer-string))))
       (error
        (asana-org-log-error "Process failed: %s" (error-message-string err))
        (signal 'asana-org-sync-failed (list (error-message-string err)))))
@@ -294,25 +302,26 @@ only sees current output, not stale data from previous calls."
                                  (asana-org--sanitize-command-args args)
                                  " "))
   (let* ((default-directory (or asana-org-root-directory default-directory))
-         (process-connection-type nil)
          (exit-code nil)
          (output nil))
     (condition-case err
-        (let ((proc (apply #'start-process "asana-org-bridge"
-                           asana-org-process-buffer-name
-                           (asana-org-get-bridge-path) args)))
-          ;; Clear the process buffer before collecting output to ensure
-          ;; we only parse the current command's response, not stale data
-          (with-current-buffer (process-buffer proc)
-            (erase-buffer))
-          (when stdin-data
-            (process-send-string proc stdin-data)
-            (process-send-eof proc))
-          (while (process-live-p proc)
-            (accept-process-output proc 0.1))
-          (setq exit-code (process-exit-status proc))
-          (with-current-buffer (process-buffer proc)
-            (setq output (string-trim (buffer-string)))))
+        (let ((input-file (make-temp-file "asana-org-input")))
+          (unwind-protect
+              (progn
+                (when stdin-data
+                  (with-temp-file input-file
+                    (insert stdin-data)))
+                (with-temp-buffer
+                  (setq exit-code
+                        (apply #'call-process
+                               (asana-org-get-bridge-path)
+                               (when stdin-data input-file)
+                               (current-buffer)
+                               nil
+                               args))
+                  (setq output (string-trim (buffer-string)))))
+            (when (file-exists-p input-file)
+              (delete-file input-file))))
       (error
        (asana-org-log-error "Process failed: %s" (error-message-string err))
        (signal 'asana-org-sync-failed (list (error-message-string err)))))

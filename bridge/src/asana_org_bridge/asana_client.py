@@ -242,6 +242,8 @@ class AsanaClient:
         workspace_gid: str | None = None,
         project_gid: str | None = None,
         limit: int = 100,
+        completed_since: str | None = None,
+        modified_since: str | None = None,
     ) -> list[AsanaTask]:
         """Fetch My Tasks from Asana.
 
@@ -249,6 +251,9 @@ class AsanaClient:
             workspace_gid: Optional workspace GID to filter by
             project_gid: Optional project GID to filter by
             limit: Maximum number of tasks to fetch
+            completed_since: ISO date; only return tasks completed after this
+                date, or incomplete tasks. Use 'now' for incomplete only.
+            modified_since: ISO date; only return tasks modified after this date
 
         Returns:
             List of AsanaTask objects
@@ -260,6 +265,11 @@ class AsanaClient:
             "opt_fields": self.TASK_FIELDS,
             "limit": min(limit, 100),  # Asana max is 100
         }
+
+        if completed_since:
+            params["completed_since"] = completed_since
+        if modified_since:
+            params["modified_since"] = modified_since
 
         # Build assignee filter
         if project_gid:
