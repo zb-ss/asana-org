@@ -281,7 +281,15 @@ def sync_pull(
         console.print("\n✓ Pull completed")
 
     except Exception as e:
-        console.print(f"[red]Error during pull: {e}[/red]")
+        if json_output:
+            error_envelope = build_error_envelope(
+                command="sync-pull",
+                code="INTERNAL_ERROR",
+                message=str(e),
+            )
+            print(json.dumps(error_envelope, indent=2))
+        else:
+            console.print(f"[red]Error during pull: {e}[/red]")
         logger.error("sync_pull_failed", error=str(e))
         raise typer.Exit(code=1) from None
 
