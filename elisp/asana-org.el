@@ -436,9 +436,14 @@ By default pulls only incomplete tasks."
            (tasks (alist-get 'tasks data))
            (pulled-count (length tasks)))
       (asana-org-log-info "Pulled %d tasks" pulled-count)
-      (message "Asana Org: Pulled %d tasks" pulled-count)
-      (when (> pulled-count 0)
-        (asana-org-render-tasks tasks))
+      (if (= pulled-count 0)
+          (message "Asana Org: No incomplete tasks found")
+        (message "Asana Org: Syncing %d tasks..." pulled-count)
+        (let ((files (asana-org-render-tasks tasks)))
+          (message "Asana Org: Pulled %d tasks into %d file(s)" pulled-count (length files))
+          ;; Open the first generated org file
+          (when (and files (car files))
+            (find-file (car files)))))
       response)))
 
 ;;;###autoload

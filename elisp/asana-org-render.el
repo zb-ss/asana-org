@@ -61,7 +61,8 @@ Returns (heading-text . properties-alist)."
   (let* ((gid (alist-get 'gid task))
          (name (alist-get 'name task))
          (permalink (alist-get 'permalink_url task))
-         (completed (alist-get 'completed task))
+         (completed-raw (alist-get 'completed task))
+         (completed (and completed-raw (not (eq completed-raw :json-false))))
          (start-on (alist-get 'start_on task))
          (due-on (alist-get 'due_on task))
          (due-at (alist-get 'due_at task))
@@ -87,9 +88,24 @@ Returns (heading-text . properties-alist)."
            (cons "DESCRIPTION" notes)
            (cons asana-org-prop-local-hash (asana-org-render--compute-hash task))))))
 
+(defun asana-org-render--normalize-json-booleans (obj)
+  "Convert :json-false to nil and :json-null to nil in OBJ recursively.
+Emacs `json-read' returns :json-false/:json-null but `json-serialize' rejects them."
+  (cond
+   ((eq obj :json-false) nil)
+   ((eq obj :json-null) nil)
+   ((and (consp obj) (not (listp (cdr obj))))
+    ;; dotted pair
+    (cons (car obj) (asana-org-render--normalize-json-booleans (cdr obj))))
+   ((listp obj)
+    (mapcar #'asana-org-render--normalize-json-booleans obj))
+   ((vectorp obj)
+    (vconcat (mapcar #'asana-org-render--normalize-json-booleans (append obj nil))))
+   (t obj)))
+
 (defun asana-org-render--compute-hash (task)
   "Compute hash for TASK content to detect changes."
-  (secure-hash 'sha256 (json-serialize task)))
+  (secure-hash 'sha256 (json-serialize (asana-org-render--normalize-json-booleans task))))
 
 (defun asana-org-render--format-timestamp (timestamp)
   "Format TIMESTAMP for Org date entry."
