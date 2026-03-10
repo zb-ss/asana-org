@@ -28,33 +28,106 @@ The system consists of:
 └─────────────────────────────────────────┘
 ```
 
+## Prerequisites
+
+-   **Python 3.11+** (`python3 --version` to check)
+-   **Emacs 28.1+** with `transient` 0.4.0+ (included in Doom Emacs and recent Emacs)
+-   **Asana Personal Access Token** - generate one at:
+    [Asana Developer Console](https://app.asana.com/0/developer-console) > Create new token
+
 ## Quickstart
 
 ### 1. Install the Bridge
+
 ```bash
-cd bridge
+git clone https://github.com/zb-ss/asana-org.git
+cd asana-org/bridge
+
+# Using a virtual environment (recommended)
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -e .
+
+# Symlink the binary so Emacs can find it
+ln -sf "$(pwd)/.venv/bin/asana-org-bridge" ~/.local/bin/asana-org-bridge
 ```
 
-### 2. Install the Emacs Client
+> **Note**: Ensure `~/.local/bin` is in your `PATH`. Add `export PATH="$HOME/.local/bin:$PATH"` to your shell profile if needed.
+
+Alternatively, install globally with [pipx](https://pypa.github.io/pipx/):
+```bash
+pipx install asana-org-bridge
+```
+
+### 2. Configure Asana PAT
+
+Add your Personal Access Token to your shell profile (`~/.bashrc` or `~/.zshrc`) so it persists across sessions:
+
+```bash
+echo 'export ASANA_PAT="your_personal_access_token"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+### 3. Initialize the Database
+
+```bash
+asana-org-bridge doctor    # Verify setup
+asana-org-bridge db-init   # Initialize local SQLite cache
+```
+
+### 4. Install the Emacs Client
+
+#### Doom Emacs
+
+```elisp
+;; in packages.el
+(package! asana-org
+  :recipe (:host github :repo "zb-ss/asana-org" :files ("elisp/*.el")))
+```
+
+```elisp
+;; in config.el
+(use-package! asana-org
+  :defer t
+  :commands (asana-org-transient asana-org-sync-pull asana-org-sync-preview
+             asana-org-sync-apply asana-org-move-task asana-org-comment-append)
+  :init
+  (setq asana-org-bridge-binary "asana-org-bridge"
+        asana-org-root-directory (expand-file-name "~/org/asana")
+        asana-org-dry-run t)
+  :config
+  (asana-org-transient-setup-keybindings))
+```
+
+Then run `doom sync` and restart Emacs.
+
+#### Vanilla Emacs / Spacemacs
+
 ```elisp
 (add-to-list 'load-path "/path/to/asana-org/elisp")
 (require 'asana-org)
+(setq asana-org-bridge-binary "asana-org-bridge"
+      asana-org-root-directory (expand-file-name "~/org/asana"))
 (asana-org-transient-setup-keybindings)
 ```
 
-### 3. Configure & Sync
-1.  **Set PAT**: `export ASANA_PAT="your_personal_access_token"`
-2.  **Initialize**:
-    ```bash
-    asana-org-bridge doctor    # Verify setup
-    asana-org-bridge db-init   # Initialize database
-    ```
-3.  **Map Projects**:
-    ```elisp
-    (setq asana-org-project-name-mapping '(("project_gid" . "~/org/asana/work.org")))
-    ```
-4.  **First Sync**: Run `M-x asana-org-sync-pull` in Emacs.
+### 5. Map Projects (Optional)
+
+Map Asana project GIDs to human-readable Org file paths. Without mappings, tasks are stored by GID (e.g. `1234567890.org`).
+
+```elisp
+(setq asana-org-project-name-mapping
+      '(("1234567890123456" . "~/org/asana/work.org")
+        ("9876543210987654" . "~/org/asana/personal.org")))
+```
+
+> **Tip**: Find project GIDs from the Asana URL: `https://app.asana.com/0/<PROJECT_GID>/...`
+
+### 6. First Sync
+
+Run `M-x asana-org-sync-pull` in Emacs (or `C-c a p`).
+
+The `~/org/asana/` directory is created automatically on first pull.
 
 ## Documentation
 
