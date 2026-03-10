@@ -259,7 +259,7 @@ only sees current output, not stale data from previous calls."
   "Call bridge SUBCOMMAND with ARGS, parsing JSON response.
 Returns parsed JSON or raises an error on failure.
 Handles error envelopes per docs/cli-contract.md."
-  (let* ((result (apply #'asana-org--run-command (cons subcommand args)))
+  (let* ((result (asana-org--run-command (cons subcommand args)))
          (exit-code (car result))
          (output (cdr result)))
     ;; First, try to parse JSON response

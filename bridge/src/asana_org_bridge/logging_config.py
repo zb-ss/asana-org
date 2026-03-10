@@ -184,7 +184,7 @@ def configure_logging(
     # Configure standard library logging
     logging.basicConfig(
         format="%(message)s",
-        stream=sys.stdout,
+        stream=sys.stderr,
         level=getattr(logging, log_level.upper()),
     )
 
@@ -215,7 +215,7 @@ def configure_logging(
             getattr(logging, log_level.upper())
         ),
         context_class=dict,
-        logger_factory=structlog.PrintLoggerFactory(),
+        logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
         cache_logger_on_first_use=True,
     )
 
