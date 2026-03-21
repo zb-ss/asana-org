@@ -679,5 +679,108 @@ def comment_append(
         raise typer.Exit(code=1) from None
 
 
+@app.command("cache-prune")
+def cache_prune(
+    dry_run: bool = typer.Option(
+        True,
+        "--dry-run/--no-dry-run",
+        help="Preview what would be pruned without deleting (default: dry-run)",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        "-j",
+        help="Output JSON envelope",
+    ),
+    report: bool = typer.Option(
+        False,
+        "--report",
+        "-r",
+        help="Show detailed report",
+    ),
+) -> None:
+    """Prune old cache entries based on retention policy.
+
+    Removes old task snapshots, sync run journals, and completed mutations
+    according to configured retention periods. Always preserves the most
+    recent snapshot per task and never deletes pending/failed mutations.
+    """
+    try:
+        engine = get_sync_engine()
+        result = engine.prune_cache(dry_run=dry_run)
+
+        report_data = {
+            "snapshots_deleted": result.snapshots_deleted,
+            "sync_runs_deleted": result.sync_runs_deleted,
+            "mutations_deleted": result.mutations_deleted,
+            "dry_run": result.dry_run,
+        }
+
+        if json_output:
+            response = {
+                "version": "1",
+                "command": "cache-prune",
+                "status": "success",
+                "data": {
+                    "report": report_data,
+                },
+            }
+            print(json.dumps(response, indent=2))
+            return
+
+        # Rich console output
+        action = "Would prune" if dry_run else "Pruned"
+        console.print(f"[bold]{action} cache entries:[/bold]\n")
+
+        if report:
+            settings = get_settings()
+            table = Table(title="Cache Prune Report")
+            table.add_column("Category", style="cyan")
+            table.add_column("Count", style="yellow", justify="right")
+            table.add_column("Retention", style="white")
+
+            table.add_row(
+                "Task snapshots",
+                str(result.snapshots_deleted),
+                f"{settings.sync.snapshot_retention_days} days",
+            )
+            table.add_row(
+                "Sync runs",
+                str(result.sync_runs_deleted),
+                f"{settings.sync.journal_retention_days} days",
+            )
+            table.add_row(
+                "Completed mutations",
+                str(result.mutations_deleted),
+                f"{settings.sync.audit_retention_days} days",
+            )
+            console.print(table)
+        else:
+            console.print(f"  Snapshots: {result.snapshots_deleted}")
+            console.print(f"  Sync runs: {result.sync_runs_deleted}")
+            console.print(f"  Mutations: {result.mutations_deleted}")
+
+        if dry_run:
+            console.print(
+                "\n[yellow]Dry run - no data was deleted. "
+                "Use --no-dry-run to delete.[/yellow]"
+            )
+        else:
+            console.print("\n\u2713 Cache pruned successfully")
+
+    except Exception as e:
+        if json_output:
+            error_envelope = build_error_envelope(
+                command="cache-prune",
+                code="INTERNAL_ERROR",
+                message=str(e),
+            )
+            print(json.dumps(error_envelope, indent=2))
+        else:
+            console.print(f"[red]Error during cache prune: {e}[/red]")
+        logger.error("cache_prune_failed", error=str(e))
+        raise typer.Exit(code=1) from None
+
+
 if __name__ == "__main__":
     app()
