@@ -78,6 +78,67 @@ def build_error_envelope(
     return envelope
 
 
+def _validate_json_envelope(
+    data: dict[str, Any],
+    command_name: str,
+    require_tasks: bool = True,
+) -> list[dict[str, Any]] | None:
+    """Validate a v1 JSON envelope and return the tasks list.
+
+    Prints an error envelope and raises typer.Exit on validation failure.
+
+    Args:
+        data: Parsed JSON dict
+        command_name: Expected command name for envelope checks
+        require_tasks: Whether to require a 'tasks' array
+
+    Returns:
+        The tasks list on success, or None if not required
+    """
+    if not isinstance(data, dict):
+        error_envelope = build_error_envelope(
+            command=command_name,
+            code="INVALID_REQUEST",
+            message="Input must be a JSON object",
+        )
+        print(json.dumps(error_envelope, indent=2))
+        raise typer.Exit(code=1)
+
+    version = data.get("version")
+    if version != "1":
+        error_envelope = build_error_envelope(
+            command=command_name,
+            code="INVALID_REQUEST",
+            message=f"Unsupported version '{version}': expected '1'",
+        )
+        print(json.dumps(error_envelope, indent=2))
+        raise typer.Exit(code=1)
+
+    command = data.get("command")
+    if command != command_name:
+        error_envelope = build_error_envelope(
+            command=command_name,
+            code="INVALID_REQUEST",
+            message=f"Invalid command '{command}': expected '{command_name}'",
+        )
+        print(json.dumps(error_envelope, indent=2))
+        raise typer.Exit(code=1)
+
+    if require_tasks:
+        tasks_list = data.get("tasks")
+        if not isinstance(tasks_list, list):
+            error_envelope = build_error_envelope(
+                command=command_name,
+                code="INVALID_REQUEST",
+                message="Missing or invalid 'tasks' array",
+            )
+            print(json.dumps(error_envelope, indent=2))
+            raise typer.Exit(code=1)
+        return tasks_list
+
+    return None
+
+
 def _read_json_input(json_input: str, command_name: str) -> dict[str, Any] | None:
     """Read and parse JSON from stdin ('-') or a file path.
 
@@ -936,48 +997,10 @@ def detect_changes(
             print(json.dumps(error_envelope, indent=2))
             raise typer.Exit(code=1)
 
-        # Validate envelope structure
-        if not isinstance(tasks_json, dict):
-            error_envelope = build_error_envelope(
-                command="detect-changes",
-                code="INVALID_REQUEST",
-                message="Input must be a JSON object",
-            )
-            print(json.dumps(error_envelope, indent=2))
-            raise typer.Exit(code=1)
-
-        version = tasks_json.get("version")
-        if version != "1":
-            error_envelope = build_error_envelope(
-                command="detect-changes",
-                code="INVALID_REQUEST",
-                message=f"Unsupported version '{version}': expected '1'",
-            )
-            print(json.dumps(error_envelope, indent=2))
-            raise typer.Exit(code=1)
-
-        command = tasks_json.get("command")
-        if command != "detect-changes":
-            error_envelope = build_error_envelope(
-                command="detect-changes",
-                code="INVALID_REQUEST",
-                message=f"Invalid command '{command}': expected 'detect-changes'",
-            )
-            print(json.dumps(error_envelope, indent=2))
-            raise typer.Exit(code=1)
-
-        tasks_list = tasks_json.get("tasks")
-        if not isinstance(tasks_list, list):
-            error_envelope = build_error_envelope(
-                command="detect-changes",
-                code="INVALID_REQUEST",
-                message="Missing or invalid 'tasks' array",
-            )
-            print(json.dumps(error_envelope, indent=2))
-            raise typer.Exit(code=1)
+        tasks_list = _validate_json_envelope(tasks_json, "detect-changes")
 
         engine = get_sync_engine()
-        result = engine.detect_changes(task_states=tasks_list)
+        result = engine.detect_changes(task_states=tasks_list)  # type: ignore[arg-type]
 
         response: dict[str, Any] = {
             "version": "1",
@@ -1066,6 +1089,210 @@ def relink(
         else:
             console.print(f"[red]Error relinking task: {e}[/red]")
         logger.error("relink_failed", error=str(e))
+        raise typer.Exit(code=1) from None
+
+
+@app.command()
+def reconcile(
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        "-j",
+        help="Output JSON envelope",
+    ),
+) -> None:
+    """Reconcile local snapshots against remote Asana state.
+
+    Compares cached task snapshots with current remote data and reports
+    any drift in key fields (completed, due_on, start_on, name).
+    """
+    try:
+        engine = get_sync_engine()
+        rec_result = engine.reconcile()
+
+        if json_output:
+            response = {
+                "version": "1",
+                "command": "reconcile",
+                "status": "success",
+                "data": {
+                    "drifted_tasks": rec_result.drifted_tasks,
+                    "missing_remote": rec_result.missing_remote,
+                    "summary": rec_result.summary,
+                },
+            }
+            print(json.dumps(response, indent=2))
+            return
+
+        # Rich console output
+        console.print("[bold]Reconcile Results[/bold]\n")
+
+        if rec_result.drifted_tasks:
+            table = Table(title="Drifted Tasks")
+            table.add_column("GID", style="cyan")
+            table.add_column("Field", style="yellow")
+            table.add_column("Snapshot", style="white")
+            table.add_column("Remote", style="green")
+
+            for drift in rec_result.drifted_tasks:
+                table.add_row(
+                    drift["gid"],
+                    drift["field"],
+                    str(drift["snapshot_value"]),
+                    str(drift["remote_value"]),
+                )
+            console.print(table)
+        else:
+            console.print("  No drift detected")
+
+        if rec_result.missing_remote:
+            console.print(f"\n[yellow]Missing from remote: {len(rec_result.missing_remote)}[/yellow]")
+            for gid in rec_result.missing_remote:
+                console.print(f"  - {gid}")
+
+        summary = rec_result.summary
+        console.print(
+            f"\nChecked: {summary['total_checked']}, "
+            f"Drifted: {summary['drifted']}, "
+            f"Missing: {summary['missing']}"
+        )
+
+    except Exception as e:
+        if json_output:
+            error_envelope = build_error_envelope(
+                command="reconcile",
+                code="INTERNAL_ERROR",
+                message=str(e),
+            )
+            print(json.dumps(error_envelope, indent=2))
+        else:
+            console.print(f"[red]Error during reconcile: {e}[/red]")
+        logger.error("reconcile_failed", error=str(e))
+        raise typer.Exit(code=1) from None
+
+
+@app.command("rebuild-cache")
+def rebuild_cache(
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        "-j",
+        help="Output JSON envelope",
+    ),
+    confirm: bool = typer.Option(
+        True,
+        "--confirm/--no-confirm",
+        help="Require confirmation before rebuilding (default: requires confirm)",
+    ),
+) -> None:
+    """Rebuild the local snapshot cache from scratch.
+
+    Deletes all cached task snapshots and re-fetches them from Asana
+    (or re-inserts from mock data). Use --no-confirm to skip the
+    safety prompt.
+    """
+    try:
+        if confirm and not json_output:
+            if not typer.confirm(
+                "This will delete all cached snapshots and rebuild from remote. Continue?"
+            ):
+                console.print("Cancelled.")
+                raise typer.Exit(code=0)
+
+        engine = get_sync_engine()
+        rb_result = engine.rebuild_cache()
+
+        if json_output:
+            response = {
+                "version": "1",
+                "command": "rebuild-cache",
+                "status": "success",
+                "data": {
+                    "snapshots_deleted": rb_result.snapshots_deleted,
+                    "snapshots_created": rb_result.snapshots_created,
+                },
+            }
+            print(json.dumps(response, indent=2))
+            return
+
+        console.print("[bold]Cache Rebuild Complete[/bold]\n")
+        console.print(f"  Snapshots deleted: {rb_result.snapshots_deleted}")
+        console.print(f"  Snapshots created: {rb_result.snapshots_created}")
+        console.print("\n\u2713 Cache rebuilt successfully")
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        if json_output:
+            error_envelope = build_error_envelope(
+                command="rebuild-cache",
+                code="INTERNAL_ERROR",
+                message=str(e),
+            )
+            print(json.dumps(error_envelope, indent=2))
+        else:
+            console.print(f"[red]Error during cache rebuild: {e}[/red]")
+        logger.error("rebuild_cache_failed", error=str(e))
+        raise typer.Exit(code=1) from None
+
+
+@app.command()
+def validate(
+    json_input: str | None = typer.Option(
+        None,
+        "--json",
+        "-j",
+        help="JSON input file or '-' for stdin with org task states",
+    ),
+) -> None:
+    """Validate org task states against cached snapshots.
+
+    Accepts org task states via JSON stdin (or file) and compares them
+    against the latest TaskSnapshot for each task. Reports mismatches,
+    orphaned org tasks (no snapshot), and orphaned DB snapshots.
+    """
+    try:
+        tasks_json: dict[str, Any] | None = None
+        if json_input:
+            tasks_json = _read_json_input(json_input, "validate")
+
+        if not tasks_json:
+            error_envelope = build_error_envelope(
+                command="validate",
+                code="INVALID_REQUEST",
+                message="No JSON input provided. Use --json - for stdin.",
+            )
+            print(json.dumps(error_envelope, indent=2))
+            raise typer.Exit(code=1)
+
+        tasks_list = _validate_json_envelope(tasks_json, "validate")
+
+        engine = get_sync_engine()
+        val_result = engine.validate(org_task_states=tasks_list)  # type: ignore[arg-type]
+
+        response: dict[str, Any] = {
+            "version": "1",
+            "command": "validate",
+            "status": "success",
+            "data": {
+                "mismatches": val_result.mismatches,
+                "orphaned_org": val_result.orphaned_org,
+                "orphaned_db": val_result.orphaned_db,
+                "summary": val_result.summary,
+            },
+        }
+        print(json.dumps(response, indent=2))
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        error_envelope = build_error_envelope(
+            command="validate",
+            code="INTERNAL_ERROR",
+            message=str(e),
+        )
+        print(json.dumps(error_envelope, indent=2))
+        logger.error("validate_failed", error=str(e))
         raise typer.Exit(code=1) from None
 
 

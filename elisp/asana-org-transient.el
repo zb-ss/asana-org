@@ -26,6 +26,8 @@
 (declare-function asana-org-get-property "asana-org")
 (declare-function asana-org-sync-status "asana-org-sync")
 (declare-function asana-org-sync--section-name-for-gid "asana-org-sync")
+(declare-function asana-org-sync-reconcile "asana-org-sync")
+(declare-function asana-org-sync-validate "asana-org-sync")
 ;; Functions from asana-org-sync.el
 (declare-function asana-org-sync-detect-changes "asana-org-sync")
 
@@ -102,6 +104,18 @@
   (interactive)
   (asana-org-sync-status))
 
+(transient-define-suffix asana-org-transient-reconcile ()
+  "Reconcile local snapshots against remote."
+  :key "r"
+  (interactive)
+  (asana-org-sync-reconcile))
+
+(transient-define-suffix asana-org-transient-validate ()
+  "Validate org states against cached snapshots."
+  :key "V"
+  (interactive)
+  (asana-org-sync-validate))
+
 (transient-define-suffix asana-org-transient-open-log ()
   "Open Asana Org log buffer."
   :key "l"
@@ -138,6 +152,8 @@
      ("c" "Add comment" asana-org-transient-comment)]
    ["Utility"
     ("s" "Status" asana-org-transient-status)
+    ("r" "Reconcile" asana-org-transient-reconcile)
+    ("V" "Validate" asana-org-transient-validate)
     ("l" "Open log" asana-org-transient-open-log)
     ("D" "Open cache dir" asana-org-transient-open-cache-dir)
     ("C" "Configure" asana-org-transient-configure)]

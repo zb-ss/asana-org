@@ -52,10 +52,11 @@
     ("comment-append" . "Append comment to task")
     ("relink" . "Relink task to new permalink URL")
     ("cache-prune" . "Prune old cache entries")
-    ("status" . "Show sync health status"))
-  "Alist of available bridge commands and descriptions.
-Note: ai-summary, reconcile, rebuild-cache, and validate are not supported
-by the current bridge CLI contract and have been removed.")
+    ("status" . "Show sync health status")
+    ("reconcile" . "Reconcile local snapshots against remote state")
+    ("rebuild-cache" . "Rebuild snapshot cache from remote")
+    ("validate" . "Validate org states against cached snapshots"))
+  "Alist of available bridge commands and descriptions.")
 
 ;;;; JSON Envelope Parsing
 
@@ -402,28 +403,90 @@ REPORT includes detailed deletion counts."
                (or snapshots 0) (or sync-runs 0) (or mutations 0)))
     response))
 
-;;;; Unsupported Commands (not in bridge CLI contract)
+;;;; Recovery Commands
 
 (defun asana-org-sync-reconcile ()
-  "Reconcile local state with remote.
-WARNING: This command is NOT supported by the current bridge CLI contract.
-It will signal an error if called."
+  "Reconcile local snapshots against remote Asana state.
+Compares cached task snapshots with current remote data and reports
+any drift in key fields (completed, due_on, start_on, name)."
   (interactive)
-  (user-error "Command 'reconcile' is not supported by the bridge CLI"))
+  (asana-org-log-info "Running reconcile")
+  (let* ((response (asana-org-call-json "reconcile" "--json"))
+         (data (asana-org-sync--parse-response response))
+         (drifted (alist-get 'drifted_tasks data))
+         (missing (alist-get 'missing_remote data))
+         (summary (alist-get 'summary data)))
+    (asana-org-log-info "Reconcile: %d checked, %d drifted, %d missing"
+                        (or (alist-get 'total_checked summary) 0)
+                        (or (alist-get 'drifted summary) 0)
+                        (or (alist-get 'missing summary) 0))
+    (when drifted
+      (dolist (d (if (vectorp drifted) (append drifted nil) drifted))
+        (asana-org-log-warn "Drift: %s field %s snapshot=%s remote=%s"
+                            (alist-get 'gid d)
+                            (alist-get 'field d)
+                            (alist-get 'snapshot_value d)
+                            (alist-get 'remote_value d))))
+    (when missing
+      (dolist (gid (if (vectorp missing) (append missing nil) missing))
+        (asana-org-log-warn "Missing from remote: %s" gid)))
+    (when (called-interactively-p 'any)
+      (message "Reconcile: %d checked, %d drifted, %d missing"
+               (or (alist-get 'total_checked summary) 0)
+               (or (alist-get 'drifted summary) 0)
+               (or (alist-get 'missing summary) 0)))
+    response))
 
 (defun asana-org-sync-rebuild-cache ()
-  "Rebuild cache from remote data.
-WARNING: This command is NOT supported by the current bridge CLI contract.
-It will signal an error if called."
+  "Rebuild the local snapshot cache from scratch.
+Deletes all cached snapshots and re-fetches from remote.
+Prompts for confirmation before proceeding."
   (interactive)
-  (user-error "Command 'rebuild-cache' is not supported by the bridge CLI"))
+  (unless (y-or-n-p "Rebuild cache will delete all snapshots and re-fetch. Continue? ")
+    (user-error "Rebuild cache cancelled"))
+  (asana-org-log-info "Rebuilding cache")
+  (let* ((response (asana-org-call-json "rebuild-cache" "--json" "--no-confirm"))
+         (data (asana-org-sync--parse-response response))
+         (deleted (or (alist-get 'snapshots_deleted data) 0))
+         (created (or (alist-get 'snapshots_created data) 0)))
+    (asana-org-log-info "Cache rebuilt: %d deleted, %d created" deleted created)
+    (when (called-interactively-p 'any)
+      (message "Cache rebuilt: %d deleted, %d created" deleted created))
+    response))
 
 (defun asana-org-sync-validate ()
-  "Validate Asana Org configuration.
-WARNING: This command is NOT supported by the current bridge CLI contract.
-It will signal an error if called."
+  "Validate org task states against cached snapshots.
+Extracts task states from org files and sends them to the bridge
+validate command to check for mismatches and orphans."
   (interactive)
-  (user-error "Command 'validate' is not supported by the bridge CLI"))
+  (asana-org-log-info "Running validate")
+  (let* ((task-states (asana-org-sync--extract-task-states))
+         (request-payload (list (cons 'version "1")
+                                (cons 'command "validate")
+                                (cons 'tasks (vconcat task-states))))
+         (json-payload (json-serialize request-payload))
+         (args (list "validate" "--json" "-"))
+         (response (asana-org-call-json-with-stdin args json-payload))
+         (data (asana-org-sync--parse-response response))
+         (mismatches (alist-get 'mismatches data))
+         (summary (alist-get 'summary data)))
+    (asana-org-log-info "Validate: %d total, %d valid, %d mismatched"
+                        (or (alist-get 'total summary) 0)
+                        (or (alist-get 'valid summary) 0)
+                        (or (alist-get 'mismatched summary) 0))
+    (when mismatches
+      (dolist (m (if (vectorp mismatches) (append mismatches nil) mismatches))
+        (asana-org-log-warn "Mismatch: %s field %s org=%s snapshot=%s"
+                            (alist-get 'gid m)
+                            (alist-get 'field m)
+                            (alist-get 'org_value m)
+                            (alist-get 'snapshot_value m))))
+    (when (called-interactively-p 'any)
+      (message "Validate: %d total, %d valid, %d mismatched"
+               (or (alist-get 'total summary) 0)
+               (or (alist-get 'valid summary) 0)
+               (or (alist-get 'mismatched summary) 0)))
+    response))
 
 ;;;; Batch Operations
 
