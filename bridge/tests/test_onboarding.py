@@ -11,6 +11,7 @@ from typer.testing import CliRunner
 
 from asana_org_bridge.auth import AuthManager
 from asana_org_bridge.commands import app
+from asana_org_bridge.config import reload_settings
 from asana_org_bridge.db import Database, MigrationManager
 from asana_org_bridge.models import TaskSnapshot
 from asana_org_bridge.sync import SyncEngine
@@ -84,6 +85,7 @@ class TestDoctorOnboarding:
         """Doctor detects first-run when no DB and no PAT are configured."""
         monkeypatch.delenv("ASANA_PAT", raising=False)
         monkeypatch.setenv("ASANA_ORG_DB_PATH", str(tmp_path / "nonexistent.db"))
+        reload_settings()
 
         result = runner.invoke(app, ["doctor"])
         assert result.exit_code == 0
@@ -97,6 +99,7 @@ class TestDoctorOnboarding:
         """Doctor detects partial setup: DB exists but no PAT."""
         monkeypatch.delenv("ASANA_PAT", raising=False)
         monkeypatch.setenv("ASANA_ORG_DB_PATH", str(database.db_path))
+        reload_settings()
 
         result = runner.invoke(app, ["doctor"])
         assert result.exit_code == 0
@@ -109,6 +112,7 @@ class TestDoctorOnboarding:
         """Doctor detects partial setup: PAT configured but no DB."""
         monkeypatch.setenv("ASANA_PAT", "test_pat_12345")
         monkeypatch.setenv("ASANA_ORG_DB_PATH", str(tmp_path / "nonexistent.db"))
+        reload_settings()
 
         result = runner.invoke(app, ["doctor"])
         assert result.exit_code == 0
@@ -121,6 +125,7 @@ class TestDoctorOnboarding:
         """Doctor does not show setup guide when fully configured."""
         monkeypatch.setenv("ASANA_PAT", "test_pat_12345")
         monkeypatch.setenv("ASANA_ORG_DB_PATH", str(database.db_path))
+        reload_settings()
 
         result = runner.invoke(app, ["doctor"])
         assert result.exit_code == 0
@@ -253,6 +258,7 @@ class TestRelinkCommand:
 
         monkeypatch.setenv("ASANA_ORG_DB_PATH", str(database.db_path))
         monkeypatch.setenv("ASANA_ORG_MOCK_DATA", "true")
+        reload_settings()
 
         result = runner.invoke(
             app,
