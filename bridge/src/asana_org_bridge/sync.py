@@ -1041,6 +1041,22 @@ class SyncEngine:
                         warning=apply_warning,
                     )
 
+        # Policy hook: check field-level write permission
+        field_names = self._get_field_names_for_operation(operation, payload)
+        for field_name in field_names:
+            if not self.allow_field_write(field_name, task_gid):
+                logger.info(
+                    "field_write_denied_by_policy",
+                    field_name=field_name,
+                    task_gid=task_gid,
+                )
+                return {
+                    "success": False,
+                    "error": "Field write denied by policy",
+                    "error_code": "POLICY_DENIED",
+                    "status": "blocked",
+                }
+
         try:
             if operation in ("update_status", "complete_task", "uncomplete_task"):
                 # Handle status/completion changes
@@ -1409,6 +1425,92 @@ class SyncEngine:
         """Increment attempt counter safely when database rows contain null."""
         mutation.attempts = (mutation.attempts or 0) + 1
 
+    # --- Policy hook methods (override in subclasses) ---
+
+    def pre_apply_guard(
+        self, mutations: list[dict]
+    ) -> tuple[list[dict], list[dict], str | None]:
+        """Filter mutations before applying.
+
+        Called at the beginning of apply_from_json after validation, before
+        the processing loop. Override in subclasses to implement custom
+        policies (e.g., block certain mutation types, enforce approval).
+
+        Args:
+            mutations: List of validated mutation dicts from the request
+
+        Returns:
+            Tuple of (allowed, blocked, reason). Default: all allowed,
+            none blocked, no reason.
+        """
+        logger.debug("pre_apply_guard_default", mutation_count=len(mutations))
+        return (mutations, [], None)
+
+    def allow_field_write(self, field_name: str, task_gid: str) -> bool:
+        """Check whether a field write is permitted by policy.
+
+        Called in _apply_mutation_via_api before executing the mutation.
+        Override in subclasses to restrict which fields can be written
+        for specific tasks.
+
+        Args:
+            field_name: The field being written (e.g., "completed", "due_on")
+            task_gid: The task GID being modified
+
+        Returns:
+            True if the write is allowed, False to block it.
+        """
+        logger.debug(
+            "allow_field_write_default",
+            field_name=field_name,
+            task_gid=task_gid,
+        )
+        return True
+
+    def redact_outbound_payload(self, record: dict) -> dict:
+        """Redact sensitive fields from a task record before sending externally.
+
+        Intended for use when sending task data to AI providers or other
+        third-party services. Override in subclasses to strip notes,
+        comments, custom fields, or other sensitive data.
+
+        Args:
+            record: Task data dictionary
+
+        Returns:
+            Redacted copy of the record. Default: returns unchanged.
+        """
+        logger.debug("redact_outbound_payload_default")
+        return record
+
+    @staticmethod
+    def _get_field_names_for_operation(
+        operation: str, payload: dict[str, Any]
+    ) -> list[str]:
+        """Map an operation type to the field names it writes.
+
+        Args:
+            operation: Internal operation name
+            payload: Mutation payload (used for date operations)
+
+        Returns:
+            List of field names being written
+        """
+        if operation in ("update_status", "complete_task", "uncomplete_task"):
+            return ["completed"]
+        if operation in ("update_dates", "update_due_on", "update_start_on"):
+            fields: list[str] = []
+            if "due_on" in payload:
+                fields.append("due_on")
+            if "start_on" in payload:
+                fields.append("start_on")
+            return fields or ["due_on"]
+        if operation in ("append_comment", "add_comment"):
+            return ["comment"]
+        if operation in ("update_section", "move_task", "update_project"):
+            return ["section"]
+        return [operation]
+
     # Allowed mutation types per contract
     ALLOWED_MUTATION_TYPES = frozenset(
         ["task_move", "comment_add", "status_change", "date_change"]
@@ -1637,6 +1739,18 @@ class SyncEngine:
         if result.errors:
             return result
 
+        # Policy hook: pre-apply guard filters mutations before processing
+        allowed_mutations, blocked_mutations, block_reason = self.pre_apply_guard(
+            mutations_data
+        )
+        if blocked_mutations:
+            logger.info(
+                "pre_apply_guard_blocked",
+                blocked_count=len(blocked_mutations),
+                reason=block_reason,
+            )
+        mutations_data = allowed_mutations
+
         # Create a hash of the request for integrity checking on retry
         request_hash = (
             hashlib.sha256(
@@ -1719,7 +1833,17 @@ class SyncEngine:
 
             try:
                 # Process each mutation
-                results_list = []
+                results_list: list[dict[str, Any]] = []
+
+                # Add blocked mutation results from pre_apply_guard
+                for blocked_mut in blocked_mutations:
+                    blocked_key = blocked_mut.get("idempotency_key", str(uuid4()))
+                    results_list.append({
+                        "idempotency_key": str(blocked_key),
+                        "status": "blocked",
+                        "reason": block_reason or "Blocked by policy",
+                    })
+
                 for mut_data in mutations_data:
                     idempotency_key = mut_data.get("idempotency_key", str(uuid4()))
                     mutation_type = mut_data.get("type", "")
@@ -1733,15 +1857,16 @@ class SyncEngine:
                     )
 
                     if existing and existing.status == "completed":
-                        # Already applied - return success
+                        # Partial failure resume: skip already-applied mutations
+                        logger.info(
+                            "mutation_skipped_already_applied",
+                            idempotency_key=str(idempotency_key),
+                        )
                         results_list.append(
                             {
                                 "idempotency_key": str(idempotency_key),
-                                "status": "applied",
-                                "details": {
-                                    "action": mutation_type,
-                                    "message": "Already applied (idempotent)",
-                                },
+                                "status": "skipped",
+                                "reason": "already_applied",
                             }
                         )
                         continue
@@ -1875,6 +2000,32 @@ class SyncEngine:
                                 idempotency_key=str(idempotency_key),
                                 reason=conflict_reason,
                             )
+                            continue
+
+                        # Policy hook: check field-level write permission
+                        field_names = self._get_field_names_for_operation(
+                            operation, payload
+                        )
+                        field_blocked = False
+                        for field_name in field_names:
+                            if not self.allow_field_write(field_name, task_gid):
+                                logger.info(
+                                    "field_write_denied_by_policy",
+                                    field_name=field_name,
+                                    task_gid=task_gid,
+                                    idempotency_key=str(idempotency_key),
+                                )
+                                mutation.status = "failed"
+                                mutation.error_message = "Field write denied by policy"
+                                results_list.append({
+                                    "idempotency_key": str(idempotency_key),
+                                    "status": "blocked",
+                                    "reason": "Field write denied by policy",
+                                })
+                                result.failed += 1
+                                field_blocked = True
+                                break
+                        if field_blocked:
                             continue
 
                         # Apply mutation via API (or mock if no client)
@@ -2015,12 +2166,20 @@ class SyncEngine:
                             error=str(e),
                         )
 
-                # Count conflicts in results
+                # Count special statuses in results
                 conflicts_count = sum(
                     1 for r in results_list if r.get("status") == "conflict"
                 )
+                skipped_count = sum(
+                    1 for r in results_list if r.get("status") == "skipped"
+                )
+                blocked_count = sum(
+                    1 for r in results_list if r.get("status") == "blocked"
+                )
 
                 # Build JSON response (wrapped in data for elisp compatibility)
+                # Total includes both allowed and blocked mutations
+                total_count = len(mutations_data) + len(blocked_mutations)
                 result.results_json = {
                     "version": "1",
                     "command": "sync-apply",
@@ -2028,9 +2187,11 @@ class SyncEngine:
                     "data": {
                         "results": results_list,
                         "summary": {
-                            "total": len(mutations_data),
+                            "total": total_count,
                             "applied": result.applied,
                             "failed": result.failed,
+                            "skipped": skipped_count,
+                            "blocked": blocked_count,
                             "conflicts": conflicts_count,
                         },
                     },
