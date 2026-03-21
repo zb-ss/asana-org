@@ -345,6 +345,33 @@ class AsanaClient:
             memberships=data.get("memberships", []),
         )
 
+    def get_task(
+        self,
+        task_gid: str,
+        opt_fields: str | None = None,
+    ) -> dict[str, Any]:
+        """Fetch a single task by GID.
+
+        Args:
+            task_gid: Task GID to fetch
+            opt_fields: Optional comma-separated fields to request
+
+        Returns:
+            Raw task data dictionary from the API
+
+        Raises:
+            AsanaAPIError: If the API call fails
+        """
+        if opt_fields is None:
+            opt_fields = self.TASK_FIELDS
+
+        response = self._request(
+            "GET",
+            f"/tasks/{task_gid}",
+            params={"opt_fields": opt_fields},
+        )
+        return cast(dict[str, Any], response.get("data", {}))
+
     def update_task(
         self,
         task_gid: str,
