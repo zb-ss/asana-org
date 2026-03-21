@@ -620,37 +620,9 @@ Uses Asana MCP for summaries."
   (ignore task-gids)
   (user-error "Command 'ai-summary' is not supported by the bridge CLI"))
 
-;;;; Rendering Helpers (delegated to asana-org-render)
-
-(defun asana-org-render-tasks (tasks)
-  "Render TASKS to Org files.
-Delegates to `asana-org-render-tasks' in asana-org-render.el."
-  (require 'asana-org-render)
-  (asana-org-render-tasks tasks))
-
-(defun asana-org-render-tasks-with-sections (tasks sections)
-  "Render TASKS grouped by SECTIONS to Org files.
-Delegates to `asana-org-render-tasks-with-sections' in asana-org-render.el."
-  (require 'asana-org-render)
-  (asana-org-render-tasks-with-sections tasks sections))
-
-(defun asana-org-render-preview (preview-data)
-  "Render PREVIEW-DATA to preview buffer.
-Delegates to `asana-org-render-preview' in asana-org-render.el."
-  (require 'asana-org-render)
-  (asana-org-render-preview preview-data))
-
-(defun asana-org-render-apply-result (apply-data)
-  "Render APPLY results to buffer.
-Delegates to `asana-org-render-apply-result' in asana-org-render.el."
-  (require 'asana-org-render)
-  (asana-org-render-apply-result apply-data))
-
-(defun asana-org-render-ai-summary (summary-data)
-  "Render AI SUMMARY-DATA to buffer.
-Delegates to `asana-org-render-ai-summary' in asana-org-render.el."
-  (require 'asana-org-render)
-  (asana-org-render-ai-summary summary-data))
+;;;; Rendering Helpers
+;; Real implementations live in asana-org-render.el, loaded via
+;; (require 'asana-org-render) at the bottom of this file.
 
 ;;;; Minor Mode Definition
 
