@@ -18,6 +18,7 @@
 (require 'org)
 (require 'org-element)
 (require 'seq)
+(require 'cl-lib)
 
 ;; Forward declarations to avoid circular require
 ;; Functions from asana-org.el
@@ -55,6 +56,23 @@
 
 ;;;; Task Rendering
 
+(defun asana-org-render--seq-first (seq)
+  "Return the first element of SEQ, which may be a list or vector.
+Returns nil if SEQ is nil or empty."
+  (cond
+   ((null seq) nil)
+   ((vectorp seq) (and (> (length seq) 0) (aref seq 0)))
+   ((listp seq) (car seq))
+   (t nil)))
+
+(defun asana-org-render--memberships-to-list (memberships)
+  "Coerce MEMBERSHIPS to a list, handling vectors from `json-read'."
+  (cond
+   ((null memberships) nil)
+   ((vectorp memberships) (append memberships nil))
+   ((listp memberships) memberships)
+   (t nil)))
+
 (defun asana-org-render--task-to-org (task)
   "Convert Asana TASK data to Org heading text and properties.
 Returns (heading-text . properties-alist)."
@@ -69,9 +87,8 @@ Returns (heading-text . properties-alist)."
          (notes (alist-get 'notes task))
          (modified-at (alist-get 'modified_at task))
          (memberships (alist-get 'memberships task))
-         ;; memberships is a list of objects: [{"project": {"gid": "..."}, "section": {"gid": "..."}}]
-         ;; Extract project_gid and section_gid from first membership
-         (first-membership (and memberships (listp memberships) (car-safe memberships)))
+         ;; memberships is a vector or list from json-read
+         (first-membership (asana-org-render--seq-first memberships))
          (project-obj (and first-membership (alist-get 'project first-membership)))
          (section-obj (and first-membership (alist-get 'section first-membership)))
          (project-gid (and project-obj (alist-get 'gid project-obj)))
@@ -181,9 +198,7 @@ Creates or updates Org files in `asana-org-root-directory'."
   (let* ((by-project (seq-group-by
                       (lambda (task)
                         (let* ((memberships (alist-get 'memberships task))
-                               ;; memberships is a list of objects: [{"project": {"gid": "..."}, ...}]
-                               ;; Extract project gid from first membership
-                               (first-membership (and memberships (listp memberships) (car-safe memberships)))
+                               (first-membership (asana-org-render--seq-first memberships))
                                (project-obj (and first-membership (alist-get 'project first-membership)))
                                (project-gid (and project-obj (alist-get 'gid project-obj))))
                           (or project-gid "my-tasks")))
@@ -207,85 +222,101 @@ Creates or updates Org files in `asana-org-root-directory'."
 (defun asana-org-render--extract-section-gid (task project-gid)
   "Extract section GID from TASK for the matching PROJECT-GID membership.
 Falls back to first membership if no match found."
-  (let* ((memberships (alist-get 'memberships task))
+  (let* ((memberships (asana-org-render--memberships-to-list
+                       (alist-get 'memberships task)))
          (match (seq-find (lambda (mem)
                             (let* ((proj (alist-get 'project mem))
                                    (pgid (and proj (alist-get 'gid proj))))
                               (and pgid (string= pgid project-gid))))
                           memberships))
-         (mem (or match (car-safe memberships)))
+         (mem (or match (car memberships)))
          (section-obj (and mem (alist-get 'section mem))))
     (and section-obj (alist-get 'gid section-obj))))
 
+(defun asana-org-render--collect-all-sections (sections-map)
+  "Collect all sections from SECTIONS-MAP into a flat ordered list.
+Deduplicates by section GID, preserving first occurrence order.
+SECTIONS-MAP is an alist mapping project-gid to section vectors/lists."
+  (let ((seen (make-hash-table :test 'equal))
+        (result nil))
+    (dolist (entry sections-map)
+      (let* ((sections-raw (cdr entry))
+             (sections (if (vectorp sections-raw)
+                           (append sections-raw nil)
+                         sections-raw)))
+        (dolist (section sections)
+          (let ((gid (alist-get 'gid section)))
+            (unless (gethash gid seen)
+              (puthash gid t seen)
+              (push section result))))))
+    (nreverse result)))
+
 (defun asana-org-render-tasks-with-sections (tasks sections-map)
-  "Render TASKS grouped by Asana sections using SECTIONS-MAP for ordering.
+  "Render all TASKS into a single My Tasks file grouped by section.
 SECTIONS-MAP is an alist mapping project-gid to an ordered vector/list
 of section objects, each with `gid' and `name' fields.
-Sections become level-1 headings, tasks become level-2 headings."
-  (let* ((by-project (seq-group-by
+Sections become level-1 headings, tasks become level-2 headings.
+All tasks are merged into one file regardless of project.
+Tasks with a `my_tasks_section_gid' field use that for grouping."
+  (let* ((file (expand-file-name "my-tasks.org" asana-org-root-directory))
+         ;; Collect all unique sections in order across all projects
+         (all-sections (asana-org-render--collect-all-sections sections-map))
+         ;; Build a map of section-gid -> tasks
+         ;; Use my_tasks_section_gid if present (injected by bridge),
+         ;; otherwise fall back to membership section lookup
+         (by-section (seq-group-by
                       (lambda (task)
-                        (let* ((memberships (alist-get 'memberships task))
-                               (first-mem (and memberships (listp memberships) (car-safe memberships)))
-                               (project-obj (and first-mem (alist-get 'project first-mem)))
-                               (project-gid (and project-obj (alist-get 'gid project-obj))))
-                          (or project-gid "my-tasks")))
+                        (or (alist-get 'my_tasks_section_gid task)
+                            (let* ((memberships (asana-org-render--memberships-to-list
+                                                 (alist-get 'memberships task))))
+                              (or (cl-some (lambda (mem)
+                                             (let ((section-obj (alist-get 'section mem)))
+                                               (and section-obj
+                                                    (alist-get 'gid section-obj))))
+                                           memberships)
+                                  "unsectioned"))))
                       tasks))
-         (updated-files nil))
-    (pcase-dolist (`(,project-gid . ,project-tasks) by-project)
-      (let* ((file (asana-org-get-project-file project-gid))
-             (raw-sections (alist-get (intern project-gid) sections-map))
-             ;; Also try string key lookup (json-read may use strings or symbols)
-             (ordered-sections (or raw-sections
-                                   (cdr (assoc project-gid sections-map))))
-             ;; Coerce vector to list if needed
-             (ordered-sections (if (vectorp ordered-sections)
-                                   (append ordered-sections nil)
-                                 ordered-sections))
-             ;; Group tasks by section-gid within this project
-             (by-section (seq-group-by
-                          (lambda (task)
-                            (or (asana-org-render--extract-section-gid task project-gid)
-                                "unsectioned"))
-                          project-tasks))
-             (content-parts nil))
-        ;; File header
-        (push "#+TITLE: My Tasks\n" content-parts)
-        (push "#+CATEGORY: asana\n" content-parts)
-        (push "#+STARTUP: overview\n\n" content-parts)
+         (content-parts nil))
+    ;; File header
+    (push "#+TITLE: My Tasks\n" content-parts)
+    (push "#+CATEGORY: asana\n" content-parts)
+    (push "#+STARTUP: overview\n\n" content-parts)
 
-        (if ordered-sections
-            (progn
-              ;; Render each section in API order
-              (dolist (section ordered-sections)
-                (let* ((section-gid (alist-get 'gid section))
-                       (section-name (alist-get 'name section))
-                       (section-tasks (cdr (assoc section-gid by-section))))
-                  ;; Section heading (level 1)
-                  (push (format "* %s\n" section-name) content-parts)
-                  ;; Tasks in this section (level 2)
-                  (dolist (task section-tasks)
-                    (push (asana-org-render-task-entry-at-level task 2) content-parts))))
-              ;; Handle tasks not in any known section
-              (let ((unsectioned (cdr (assoc "unsectioned" by-section))))
-                (when unsectioned
-                  (push "* Unsectioned\n" content-parts)
-                  (dolist (task unsectioned)
-                    (push (asana-org-render-task-entry-at-level task 2) content-parts)))))
-          ;; Fallback: no sections data, render flat
-          (dolist (task project-tasks)
-            (push (asana-org-render-task-entry task) content-parts)))
+    (if all-sections
+        (progn
+          ;; Render each section in order
+          (dolist (section all-sections)
+            (let* ((section-gid (alist-get 'gid section))
+                   (section-name (alist-get 'name section))
+                   (section-tasks (cdr (assoc section-gid by-section))))
+              ;; Section heading (level 1)
+              (push (format "* %s\n" section-name) content-parts)
+              ;; Tasks in this section (level 2)
+              (dolist (task section-tasks)
+                (push (asana-org-render-task-entry-at-level task 2) content-parts))))
+          ;; Handle tasks not in any known section
+          (let ((unsectioned (cdr (assoc "unsectioned" by-section))))
+            (when unsectioned
+              (push "* Unsectioned\n" content-parts)
+              (dolist (task unsectioned)
+                (push (asana-org-render-task-entry-at-level task 2) content-parts)))))
+      ;; Fallback: no sections data, render flat
+      (dolist (task tasks)
+        (push (asana-org-render-task-entry task) content-parts)))
 
-        ;; Write file
-        (let ((content (apply #'concat (nreverse content-parts))))
-          (asana-org-ensure-root-directory)
-          (with-temp-file file
-            (insert content))
-          (push file updated-files)
-          (asana-org-log-info "Wrote %d tasks (%d sections) to %s"
-                              (length project-tasks)
-                              (length ordered-sections)
-                              file))))
-    updated-files))
+    ;; Write file and keep any visiting buffer in sync
+    (let ((content (apply #'concat (nreverse content-parts))))
+      (asana-org-ensure-root-directory)
+      (let ((buf (find-file-noselect file)))
+        (with-current-buffer buf
+          (erase-buffer)
+          (insert content)
+          (save-buffer)))
+      (asana-org-log-info "Wrote %d tasks (%d sections) to %s"
+                          (length tasks)
+                          (length all-sections)
+                          file))
+    (list file)))
 
 (defun asana-org-render--parse-existing-tasks (file)
   "Parse existing tasks from ORG-FILE.
