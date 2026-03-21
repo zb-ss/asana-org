@@ -270,7 +270,7 @@ def sync_pull(
         None,
         "--project",
         "-p",
-        help="Filter by project GID (reserved for future use)",
+        help="Filter tasks by project GID",
     ),
     include_comments: bool = typer.Option(
         False,
@@ -323,6 +323,7 @@ def sync_pull(
             incomplete_only=incomplete_only,
             modified_since=modified_since,
             include_comments=include_comments,
+            project_gid=project,
         )
 
         if json_output:
