@@ -91,6 +91,11 @@ class AsanaClient:
         "memberships.section.gid,memberships.section.name"
     )
 
+    STORY_FIELDS = (
+        "created_by,created_by.name,text,created_at,"
+        "type,resource_subtype"
+    )
+
     def __init__(
         self,
         pat: str,
@@ -581,6 +586,52 @@ class AsanaClient:
         for task_data in data:
             tasks.append(self._parse_task(task_data))
         return tasks
+
+    def get_stories(
+        self,
+        task_gid: str,
+        opt_fields: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Fetch comment stories for a task.
+
+        Only returns comment-type stories, filtering out system events.
+
+        Args:
+            task_gid: Task GID to fetch stories for
+            opt_fields: Optional fields to request (defaults to comment-relevant fields)
+
+        Returns:
+            List of comment story dicts with gid, created_by, text, created_at
+
+        Raises:
+            AsanaAPIError: If the API call fails
+        """
+        if opt_fields is None:
+            opt_fields = self.STORY_FIELDS
+
+        response = self._request(
+            "GET",
+            f"/tasks/{task_gid}/stories",
+            params={"opt_fields": opt_fields},
+        )
+
+        stories: list[dict[str, Any]] = []
+        for story in response.get("data", []):
+            is_comment = (
+                story.get("resource_subtype") == "comment_added"
+                or story.get("type") == "comment"
+            )
+            if not is_comment:
+                continue
+
+            stories.append({
+                "gid": story.get("gid", ""),
+                "created_by": story.get("created_by", {}),
+                "text": story.get("text", ""),
+                "created_at": story.get("created_at", ""),
+            })
+
+        return stories
 
     def close(self) -> None:
         """Close the client session."""
