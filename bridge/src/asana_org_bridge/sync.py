@@ -2533,6 +2533,71 @@ class SyncEngine:
                 )
                 task_data["stories"] = []
 
+    def relink_task(self, task_gid: str, new_permalink: str) -> dict[str, Any]:
+        """Relink a task to a new permalink URL.
+
+        Finds the latest TaskSnapshot for the given GID and updates its
+        permalink_url field. Useful when a task has been moved and its
+        permalink has changed.
+
+        Args:
+            task_gid: Task GID to relink
+            new_permalink: New permalink URL
+
+        Returns:
+            Dictionary with task_gid, old_permalink, new_permalink, task_name
+            on success, or a dict with 'error' and 'code' keys on failure.
+        """
+        # Validate permalink format
+        if not new_permalink.startswith("https://app.asana.com/"):
+            return {
+                "error": (
+                    f"Invalid permalink format: must start with "
+                    f"'https://app.asana.com/', got '{new_permalink}'"
+                ),
+                "code": "INVALID_REQUEST",
+            }
+
+        try:
+            with self.db.session() as session:
+                # Find latest snapshot by gid
+                snapshot = (
+                    session.query(TaskSnapshot)
+                    .filter(TaskSnapshot.gid == task_gid)
+                    .order_by(TaskSnapshot.snapshot_at.desc())
+                    .first()
+                )
+
+                if not snapshot:
+                    return {
+                        "error": f"No task snapshot found for GID '{task_gid}'",
+                        "code": "NOT_FOUND",
+                    }
+
+                old_permalink = snapshot.permalink_url
+                snapshot.permalink_url = new_permalink
+
+                logger.info(
+                    "task_relinked",
+                    task_gid=task_gid,
+                    old_permalink=old_permalink,
+                    new_permalink=new_permalink,
+                )
+
+                return {
+                    "task_gid": task_gid,
+                    "old_permalink": old_permalink,
+                    "new_permalink": new_permalink,
+                    "task_name": snapshot.name,
+                }
+
+        except Exception as e:
+            logger.error("relink_task_failed", task_gid=task_gid, error=str(e))
+            return {
+                "error": f"Failed to relink task: {e}",
+                "code": "INTERNAL_ERROR",
+            }
+
     def get_status(self) -> dict[str, Any]:
         """Query sync health information from the database.
 
