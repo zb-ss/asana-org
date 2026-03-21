@@ -970,6 +970,177 @@ class SyncEngine:
             return False
         return section_ref.isdigit() or section_ref.startswith("sect_")
 
+    def _validate_section_in_project(
+        self,
+        target_section_gid: str,
+        task_gid: str,
+        from_list: str,
+    ) -> dict[str, Any] | None:
+        """Validate that a section GID belongs to the task's project.
+
+        Args:
+            target_section_gid: The target section GID to validate
+            task_gid: Task GID being moved
+            from_list: Source list/section hint (may contain project info)
+
+        Returns:
+            Error envelope dict if validation fails, None if valid
+        """
+        if self.use_mock or not self.asana_client:
+            return self._validate_section_mock(target_section_gid, task_gid)
+
+        return self._validate_section_api(
+            target_section_gid, task_gid, from_list
+        )
+
+    def _validate_section_mock(
+        self,
+        target_section_gid: str,
+        task_gid: str,
+    ) -> dict[str, Any] | None:
+        """Validate section against mock data.
+
+        Args:
+            target_section_gid: Section GID to validate
+            task_gid: Task GID being moved
+
+        Returns:
+            Error envelope dict if validation fails, None if valid
+        """
+        project_gid = None
+        for task_data in MockDataGenerator.MOCK_TASKS:
+            if task_data["gid"] == task_gid:
+                project_gid = task_data.get("project_gid")
+                break
+
+        if not project_gid:
+            return None
+
+        project_name = project_gid
+        for proj in MockDataGenerator.MOCK_PROJECTS:
+            if proj["gid"] == project_gid:
+                project_name = proj["name"]
+                break
+
+        valid_sections = [
+            s for s in MockDataGenerator.MOCK_SECTIONS
+            if s["project_gid"] == project_gid
+        ]
+
+        valid_gids = {s["gid"] for s in valid_sections}
+        if target_section_gid in valid_gids:
+            return None
+
+        section_list = self._format_section_list(valid_sections)
+        return self._build_invalid_section_error(
+            target_section_gid, project_name, section_list
+        )
+
+    def _validate_section_api(
+        self,
+        target_section_gid: str,
+        task_gid: str,
+        from_list: str,
+    ) -> dict[str, Any] | None:
+        """Validate section against live Asana API.
+
+        Determines the task's project from the from_list argument or by
+        fetching the task's current memberships, then checks that the
+        target section belongs to that project.
+
+        Args:
+            target_section_gid: Section GID to validate
+            task_gid: Task GID being moved
+            from_list: Source list/section hint
+
+        Returns:
+            Error envelope dict if validation fails, None if valid
+        """
+        client = self.asana_client
+        if not client:
+            return None
+
+        project_gid: str | None = None
+        project_name: str | None = None
+
+        if from_list and (from_list.isdigit() or from_list.startswith("proj_")):
+            project_gid = from_list
+
+        if not project_gid:
+            try:
+                task = client.get_task(task_gid)
+                if task.memberships:
+                    first_membership = task.memberships[0]
+                    project_obj = first_membership.get("project", {})
+                    project_gid = project_obj.get("gid")
+                    project_name = project_obj.get("name")
+            except Exception:
+                logger.warning(
+                    "section_validation_task_fetch_failed",
+                    task_gid=task_gid,
+                )
+                return None
+
+        if not project_gid:
+            return None
+
+        try:
+            sections = client.get_sections(project_gid)
+        except Exception:
+            logger.warning(
+                "section_validation_sections_fetch_failed",
+                project_gid=project_gid,
+            )
+            return None
+
+        valid_gids = {s.get("gid") for s in sections}
+        if target_section_gid in valid_gids:
+            return None
+
+        if not project_name:
+            project_name = project_gid
+
+        section_list = self._format_section_list(sections)
+        return self._build_invalid_section_error(
+            target_section_gid, project_name, section_list
+        )
+
+    @staticmethod
+    def _format_section_list(sections: list[dict[str, Any]]) -> str:
+        """Format a list of sections as 'Name (gid), ...' for error messages."""
+        return ", ".join(
+            f"{s.get('name', '?')} ({s.get('gid', '?')})" for s in sections
+        )
+
+    @staticmethod
+    def _build_invalid_section_error(
+        target: str,
+        project_name: str,
+        section_list: str,
+    ) -> dict[str, Any]:
+        """Build an INVALID_SECTION error envelope.
+
+        Args:
+            target: The invalid section GID
+            project_name: Name or GID of the project
+            section_list: Formatted list of valid sections
+
+        Returns:
+            Error envelope dict
+        """
+        return {
+            "version": "1",
+            "command": "move-task",
+            "status": "error",
+            "error": {
+                "code": "INVALID_SECTION",
+                "message": (
+                    f"Section '{target}' not found in project "
+                    f"'{project_name}'. Valid sections: {section_list}"
+                ),
+            },
+        }
+
     @staticmethod
     def _increment_attempts(mutation: PendingMutation) -> None:
         """Increment attempt counter safely when database rows contain null."""
@@ -1680,6 +1851,17 @@ class SyncEngine:
             )
             session.add(mutation)
             session.flush()
+
+            # Validate target section belongs to the task's project
+            if self._looks_like_section_gid(to_list):
+                validation_error = self._validate_section_in_project(
+                    to_list, task_gid, from_list
+                )
+                if validation_error:
+                    mutation.status = "failed"
+                    mutation.error_message = validation_error["error"]["message"]
+                    self._increment_attempts(mutation)
+                    return validation_error
 
             if self.use_mock or not self.asana_client:
                 logger.info(
