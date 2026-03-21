@@ -5,6 +5,7 @@
 | Command | Purpose |
 |---------|---------|
 | `sync-pull` | Pull tasks from Asana with section ordering; returns tasks + sections JSON |
+| `detect-changes` | Compare org file task states against cached snapshots; returns pending changes |
 | `sync-preview` | Fetch pending changes, return diff-ready JSON for Emacs to display |
 | `sync-apply` | Execute batch of mutations with idempotency; returns results/errors per mutation |
 | `move-task` | Move a task to a different list/section |
@@ -12,7 +13,7 @@
 
 **Note**: Commands use hyphenated naming (e.g., `sync-pull`, `sync-preview`, `sync-apply`).
 
-`sync-apply` accepts JSON over stdin/stdout (`--json -`).
+`sync-apply` and `detect-changes` accept JSON over stdin/stdout (`--json -`).
 `move-task` and `comment-append` use CLI arguments for input, with optional JSON output (`--json`).
 
 ---
@@ -61,6 +62,105 @@
 ```
 
 The `sections` map provides ordered section lists per project, matching the display order in Asana. Emacs uses this to render section headings (level 1) with tasks nested under them (level 2).
+
+---
+
+## 2b. detect-changes Request/Response
+
+### Request Schema (stdin)
+
+```json
+{
+  "version": "1",
+  "command": "detect-changes",
+  "tasks": [
+    {
+      "gid": "string",
+      "completed": true | false,
+      "due_on": "YYYY-MM-DD | null",
+      "start_on": "YYYY-MM-DD | null",
+      "local_hash": "string"
+    }
+  ]
+}
+```
+
+### Response Schema
+
+```json
+{
+  "version": "1",
+  "command": "detect-changes",
+  "status": "success",
+  "data": {
+    "pending_changes": [
+      {
+        "id": "pc_<hash>",
+        "type": "status_change" | "date_change",
+        "description": "human-readable change summary",
+        "current_state": {
+          "task_gid": "string",
+          "task_name": "string",
+          "completed": true | false,
+          "due_on": "YYYY-MM-DD | null",
+          "start_on": "YYYY-MM-DD | null",
+          "modified_at": "ISO datetime"
+        },
+        "proposed_state": {
+          "task_gid": "string",
+          "completed": true | false,
+          "due_on": "YYYY-MM-DD | null",
+          "start_on": "YYYY-MM-DD | null"
+        },
+        "baseline_modified_at": "ISO datetime"
+      }
+    ],
+    "summary": {
+      "total": 0,
+      "status_changes": 0,
+      "date_changes": 0
+    },
+    "warnings": ["string"]
+  }
+}
+```
+
+### Example
+
+```json
+{
+  "version": "1",
+  "command": "detect-changes",
+  "status": "success",
+  "data": {
+    "pending_changes": [
+      {
+        "id": "pc_a1b2c3d4",
+        "type": "status_change",
+        "description": "Mark task 1234567890 as completed",
+        "current_state": {
+          "task_gid": "1234567890",
+          "task_name": "Fix login bug",
+          "completed": false,
+          "modified_at": "2026-03-15T10:00:00+00:00"
+        },
+        "proposed_state": {
+          "task_gid": "1234567890",
+          "completed": true
+        },
+        "baseline_modified_at": "2026-03-15T10:00:00+00:00"
+      }
+    ],
+    "summary": {
+      "total": 1,
+      "status_changes": 1,
+      "date_changes": 0
+    }
+  }
+}
+```
+
+The `detect-changes` output follows the same `pending_changes` format as `sync-preview`, making it directly renderable by Emacs preview buffers.
 
 ---
 
