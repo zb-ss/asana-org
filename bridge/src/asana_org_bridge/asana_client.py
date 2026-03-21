@@ -633,6 +633,29 @@ class AsanaClient:
 
         return stories
 
+    def get_task(
+        self,
+        task_gid: str,
+        opt_fields: str | None = None,
+    ) -> AsanaTask:
+        """Fetch a single task by GID.
+
+        Args:
+            task_gid: Task GID to fetch
+            opt_fields: Optional comma-separated fields to request
+
+        Returns:
+            AsanaTask object
+
+        Raises:
+            AsanaAPIError: If the API call fails
+        """
+        params: dict[str, Any] = {
+            "opt_fields": opt_fields or self.TASK_FIELDS,
+        }
+        response = self._request("GET", f"/tasks/{task_gid}", params=params)
+        return self._parse_task(response.get("data", {}))
+
     def close(self) -> None:
         """Close the client session."""
         self._session.close()
