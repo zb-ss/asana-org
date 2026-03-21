@@ -24,6 +24,7 @@
 (declare-function asana-org-move-task "asana-org")
 (declare-function asana-org-comment-append "asana-org")
 (declare-function asana-org-get-property "asana-org")
+(declare-function asana-org-sync-status "asana-org-sync")
 
 ;; Variables/constants from asana-org.el
 (defvar asana-org-prop-gid)
@@ -75,6 +76,12 @@
      (list task (read-string "Comment: "))))
   (asana-org-comment-append task-gid comment))
 
+(transient-define-suffix asana-org-transient-status ()
+  "Show sync health status."
+  :key "s"
+  (interactive)
+  (asana-org-sync-status))
+
 (transient-define-suffix asana-org-transient-open-log ()
   "Open Asana Org log buffer."
   :key "l"
@@ -109,6 +116,7 @@
      ("m" "Move task" asana-org-transient-move)
      ("c" "Add comment" asana-org-transient-comment)]
    ["Utility"
+    ("s" "Status" asana-org-transient-status)
     ("l" "Open log" asana-org-transient-open-log)
     ("d" "Open cache dir" asana-org-transient-open-cache-dir)
     ("C" "Configure" asana-org-transient-configure)]
