@@ -37,7 +37,7 @@ jobs:
       - name: Byte compile
         run: |
           cd elisp
-          emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (batch-byte-compile \"asana-org.el\" \"asana-org-sync.el\" \"asana-org-render.el\" \"asana-org-transient.el\"))"
+          emacs --batch -L . --eval "(setq byte-compile-error-on-warn t)" -f batch-byte-compile asana-org.el asana-org-sync.el asana-org-render.el asana-org-transient.el
 
       - name: Run checkdoc
         run: |
