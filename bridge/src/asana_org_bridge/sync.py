@@ -75,6 +75,15 @@ class PruneResult:
     dry_run: bool = False
 
 
+@dataclass
+class DetectChangesResult:
+    """Result of a detect-changes operation."""
+
+    pending_changes: list[dict[str, Any]] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    summary: dict[str, int] = field(default_factory=dict)
+
+
 class MockDataGenerator:
     """Generates deterministic mock data for testing."""
 
@@ -2576,3 +2585,220 @@ class SyncEngine:
         )
 
         return result
+
+    def detect_changes(
+        self,
+        task_states: list[dict[str, Any]],
+    ) -> DetectChangesResult:
+        """Detect changes between org file state and latest snapshots.
+
+        Compares each task's current org state against the most recent
+        TaskSnapshot in the database and generates mutation entries for
+        any differences found.
+
+        Args:
+            task_states: List of dicts with keys: gid, completed, due_on,
+                         start_on, local_hash
+
+        Returns:
+            DetectChangesResult with pending_changes and summary
+        """
+        result = DetectChangesResult()
+        status_changes = 0
+        date_changes = 0
+
+        with self.db.session() as session:
+            for task_state in task_states:
+                gid = task_state.get("gid", "")
+                if not gid:
+                    result.warnings.append("Skipped task with empty gid")
+                    continue
+
+                # Look up the latest snapshot for this task
+                snapshot: TaskSnapshot | None
+                if self.use_mock:
+                    snapshot = self._get_mock_snapshot(gid, session)
+                else:
+                    snapshot = (
+                        session.query(TaskSnapshot)
+                        .filter(TaskSnapshot.gid == gid)
+                        .order_by(TaskSnapshot.snapshot_at.desc())
+                        .first()
+                    )
+
+                if snapshot is None:
+                    result.warnings.append(
+                        f"Task {gid} not found in database, skipped"
+                    )
+                    continue
+
+                org_completed = bool(task_state.get("completed", False))
+                org_due_on = task_state.get("due_on") or None
+                org_start_on = task_state.get("start_on") or None
+
+                # Compare completed status
+                if org_completed != snapshot.completed:
+                    change = self._build_change_entry(
+                        change_type="status_change",
+                        task_gid=gid,
+                        description=(
+                            f"Mark task {gid} as "
+                            f"{'completed' if org_completed else 'incomplete'}"
+                        ),
+                        current_state={
+                            "task_gid": gid,
+                            "task_name": snapshot.name,
+                            "completed": snapshot.completed,
+                            "modified_at": snapshot.modified_at.isoformat(),
+                        },
+                        proposed_state={
+                            "task_gid": gid,
+                            "completed": org_completed,
+                        },
+                        baseline_modified_at=snapshot.modified_at.isoformat(),
+                    )
+                    result.pending_changes.append(change)
+                    status_changes += 1
+
+                # Compare due_on
+                snapshot_due_on = snapshot.due_on or None
+                if org_due_on != snapshot_due_on:
+                    change = self._build_change_entry(
+                        change_type="date_change",
+                        task_gid=gid,
+                        description=(
+                            f"Change due date for task {gid} "
+                            f"from {snapshot_due_on} to {org_due_on}"
+                        ),
+                        current_state={
+                            "task_gid": gid,
+                            "task_name": snapshot.name,
+                            "due_on": snapshot_due_on,
+                            "modified_at": snapshot.modified_at.isoformat(),
+                        },
+                        proposed_state={
+                            "task_gid": gid,
+                            "due_on": org_due_on,
+                        },
+                        baseline_modified_at=snapshot.modified_at.isoformat(),
+                    )
+                    result.pending_changes.append(change)
+                    date_changes += 1
+
+                # Compare start_on
+                snapshot_start_on = snapshot.start_on or None
+                if org_start_on != snapshot_start_on:
+                    change = self._build_change_entry(
+                        change_type="date_change",
+                        task_gid=gid,
+                        description=(
+                            f"Change start date for task {gid} "
+                            f"from {snapshot_start_on} to {org_start_on}"
+                        ),
+                        current_state={
+                            "task_gid": gid,
+                            "task_name": snapshot.name,
+                            "start_on": snapshot_start_on,
+                            "modified_at": snapshot.modified_at.isoformat(),
+                        },
+                        proposed_state={
+                            "task_gid": gid,
+                            "start_on": org_start_on,
+                        },
+                        baseline_modified_at=snapshot.modified_at.isoformat(),
+                    )
+                    result.pending_changes.append(change)
+                    date_changes += 1
+
+        result.summary = {
+            "total": len(result.pending_changes),
+            "status_changes": status_changes,
+            "date_changes": date_changes,
+        }
+
+        logger.info(
+            "detect_changes_completed",
+            total=result.summary["total"],
+            status_changes=status_changes,
+            date_changes=date_changes,
+            warnings=len(result.warnings),
+        )
+
+        return result
+
+    def _get_mock_snapshot(
+        self, gid: str, session: Session
+    ) -> TaskSnapshot | None:
+        """Get a snapshot for mock mode, creating one from mock data if needed.
+
+        Args:
+            gid: Task GID to look up
+            session: Database session
+
+        Returns:
+            TaskSnapshot or None if task not found in mock data
+        """
+        # First try the database (may have been populated by a prior pull)
+        snapshot = (
+            session.query(TaskSnapshot)
+            .filter(TaskSnapshot.gid == gid)
+            .order_by(TaskSnapshot.snapshot_at.desc())
+            .first()
+        )
+        if snapshot:
+            return snapshot
+
+        # Fall back to generating from mock data
+        for mock_task in MockDataGenerator.MOCK_TASKS:
+            if mock_task["gid"] == gid:
+                now = datetime.now(UTC)
+                snapshot = TaskSnapshot(
+                    gid=mock_task["gid"],
+                    permalink_url=f"https://app.asana.com/0/0/{mock_task['gid']}",
+                    name=mock_task["name"],
+                    completed=mock_task.get("completed", False),
+                    start_on=mock_task.get("start_on"),
+                    due_on=mock_task.get("due_on"),
+                    notes=mock_task.get("notes"),
+                    modified_at=now,
+                )
+                session.add(snapshot)
+                session.flush()
+                return snapshot
+
+        return None
+
+    @staticmethod
+    def _build_change_entry(
+        change_type: str,
+        task_gid: str,
+        description: str,
+        current_state: dict[str, Any],
+        proposed_state: dict[str, Any],
+        baseline_modified_at: str,
+    ) -> dict[str, Any]:
+        """Build a single change entry for detect-changes output.
+
+        Args:
+            change_type: Type of change (status_change, date_change)
+            task_gid: Task GID
+            description: Human-readable description
+            current_state: Current state from snapshot
+            proposed_state: Proposed state from org
+            baseline_modified_at: Snapshot modified_at ISO string
+
+        Returns:
+            Change entry dictionary
+        """
+        # Generate a deterministic change ID from content
+        content = f"{task_gid}:{change_type}:{json.dumps(proposed_state, sort_keys=True)}"
+        change_hash = hashlib.sha256(content.encode()).hexdigest()[:8]
+
+        return {
+            "id": f"pc_{change_hash}",
+            "type": change_type,
+            "description": description,
+            "current_state": current_state,
+            "proposed_state": proposed_state,
+            "baseline_modified_at": baseline_modified_at,
+        }
