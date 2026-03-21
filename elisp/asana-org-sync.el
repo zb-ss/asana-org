@@ -44,9 +44,10 @@
     ("sync-preview" . "Preview pending changes")
     ("sync-apply" . "Apply mutations to Asana")
     ("move-task" . "Move task to project/section")
-    ("comment-append" . "Append comment to task"))
+    ("comment-append" . "Append comment to task")
+    ("cache-prune" . "Prune old cache entries"))
   "Alist of available bridge commands and descriptions.
-Note: ai-summary, cache-prune, reconcile, rebuild-cache, validate, and status are not supported
+Note: ai-summary, reconcile, rebuild-cache, validate, and status are not supported
 by the current bridge CLI contract and have been removed.")
 
 ;;;; JSON Envelope Parsing
@@ -375,12 +376,28 @@ INCLUDE-NOTES includes task notes in the summary."
   (user-error "Command 'ai-summary' is not supported by the bridge CLI"))
 
 (defun asana-org-sync-cache-prune (&optional dry-run report)
-  "Prune old cache entries.
-DRY-RUN shows what would be pruned without deleting.
+  "Prune old cache entries via the bridge CLI.
+DRY-RUN shows what would be pruned without deleting (default t).
 REPORT includes detailed deletion counts."
   (interactive)
-  (ignore dry-run report)
-  (user-error "Command 'cache-prune' is not supported by the bridge CLI"))
+  (ignore report)
+  (asana-org-log-info "Cache prune: dry-run=%s" (if dry-run "yes" "no"))
+  (let* ((args (append (list "cache-prune" "--json")
+                       (if dry-run
+                           (list "--dry-run")
+                         (list "--no-dry-run"))))
+         (response (apply #'asana-org-call-json args))
+         (data (asana-org-sync--parse-response response))
+         (prune-report (alist-get 'report data))
+         (snapshots (alist-get 'snapshots_deleted prune-report))
+         (sync-runs (alist-get 'sync_runs_deleted prune-report))
+         (mutations (alist-get 'mutations_deleted prune-report))
+         (is-dry-run (eq (alist-get 'dry_run prune-report) t)))
+    (when (called-interactively-p 'any)
+      (message "%s: %d snapshots, %d sync runs, %d mutations"
+               (if is-dry-run "Would prune" "Pruned")
+               (or snapshots 0) (or sync-runs 0) (or mutations 0)))
+    response))
 
 ;;;; Unsupported Commands (not in bridge CLI contract)
 
