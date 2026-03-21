@@ -639,6 +639,17 @@ class SyncEngine:
 
                 run.mutations_generated = len(mutations)
 
+                # Safety cap: limit mutations processed per invocation
+                settings = get_settings()
+                write_cap = settings.sync.max_writes
+                if write_cap > 0 and len(mutations) > write_cap:
+                    logger.warning(
+                        "write_cap_applied",
+                        total_pending=len(mutations),
+                        processing_limit=write_cap,
+                    )
+                    mutations = mutations[:write_cap]
+
                 if dry_run:
                     logger.info("dry_run_mode", mutations=len(mutations))
                     result.applied = len(mutations)
@@ -999,6 +1010,31 @@ class SyncEngine:
         mutations_data = mutations_json.get("mutations", [])
         if not isinstance(mutations_data, list):
             result.errors.append("'mutations' must be an array")
+            return result
+
+        # Safety cap: policy limit on writes per invocation (configurable)
+        settings = get_settings()
+        write_cap = settings.sync.max_writes
+        if write_cap > 0 and len(mutations_data) > write_cap:
+            result.results_json = {
+                "version": "1",
+                "command": "sync-apply",
+                "status": "error",
+                "error": {
+                    "code": "WRITE_LIMIT_EXCEEDED",
+                    "message": (
+                        f"Mutation count ({len(mutations_data)}) exceeds maximum "
+                        f"writes per invocation ({write_cap}). Split into smaller "
+                        f"batches or increase ASANA_ORG_MAX_WRITES."
+                    ),
+                },
+            }
+            result.errors.append(result.results_json["error"]["message"])
+            logger.warning(
+                "write_limit_exceeded",
+                mutation_count=len(mutations_data),
+                max_writes=write_cap,
+            )
             return result
 
         if len(mutations_data) > self.MAX_MUTATIONS_PER_REQUEST:
