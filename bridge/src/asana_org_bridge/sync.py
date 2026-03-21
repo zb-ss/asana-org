@@ -2881,6 +2881,92 @@ class SyncEngine:
 
         return result
 
+    def ai_summary(
+        self,
+        task_gids: list[str],
+        include_notes: bool = True,
+    ) -> dict[str, Any]:
+        """Generate an AI summary for the given tasks.
+
+        Fetches latest TaskSnapshot for each GID, builds a prompt, and
+        sends it to the Gemini API (or returns mock data).
+
+        Args:
+            task_gids: List of task GIDs to summarize
+            include_notes: Whether to include task notes in the prompt
+
+        Returns:
+            Dict with summary text, task_count, and model name
+        """
+        task_count = len(task_gids)
+
+        # Mock mode: deterministic response without API call
+        if self.use_mock:
+            logger.info("ai_summary_mock", task_count=task_count)
+            return {
+                "summary": (
+                    f"Mock AI Summary: {task_count} tasks analyzed. "
+                    "All tasks are progressing well. Key priorities include "
+                    "completing pending reviews and updating documentation. "
+                    "No blockers identified."
+                ),
+                "task_count": task_count,
+                "model": "mock",
+            }
+
+        # Live mode: build prompt from snapshots and call Gemini
+        prompt_lines = [
+            "Summarize the following Asana tasks. Provide a concise overview "
+            "of status, priorities, and any action items.",
+            "",
+        ]
+
+        with self.db.session() as session:
+            for idx, gid in enumerate(task_gids, start=1):
+                snapshot = self._get_latest_snapshot(session, gid)
+                if snapshot is None:
+                    prompt_lines.append(f"Task {idx}: (unknown task {gid})")
+                    prompt_lines.append("")
+                    continue
+
+                status_str = "Done" if snapshot.completed else "In Progress"
+                prompt_lines.append(f"Task {idx}: {snapshot.name}")
+                prompt_lines.append(f"- Status: {status_str}")
+                prompt_lines.append(
+                    f"- Due: {snapshot.due_on or 'No deadline'}"
+                )
+                prompt_lines.append(
+                    f"- Start: {snapshot.start_on or 'Not set'}"
+                )
+
+                if include_notes and snapshot.notes:
+                    prompt_lines.append(f"- Notes: {snapshot.notes}")
+
+                if snapshot.stories_json:
+                    prompt_lines.append(f"- Comments: {snapshot.stories_json}")
+
+                prompt_lines.append("")
+
+        prompt = "\n".join(prompt_lines)
+
+        from asana_org_bridge.ai_client import create_gemini_client
+
+        settings = get_settings()
+        client = create_gemini_client(settings.ai)
+        response_text = client.summarize(prompt)
+
+        logger.info(
+            "ai_summary_completed",
+            task_count=task_count,
+            model=settings.ai.model,
+        )
+
+        return {
+            "summary": response_text,
+            "task_count": task_count,
+            "model": settings.ai.model,
+        }
+
     def detect_changes(
         self,
         task_states: list[dict[str, Any]],

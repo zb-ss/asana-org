@@ -583,41 +583,37 @@ Response shape per cli-contract.md:
   "Buffer name for AI summary output.")
 
 (defun asana-org-render-ai-summary (summary-data)
-  "Render AI SUMMARY-DATA to dedicated buffer."
-  (let* ((data (alist-get 'data summary-data))
-         (summary (alist-get 'summary data))
-         (digest (alist-get 'digest data))
-         (tasks (alist-get 'tasks data))
+  "Render AI SUMMARY-DATA to dedicated buffer.
+SUMMARY-DATA is the `data' alist from the bridge response with keys:
+  summary   -- the AI-generated text
+  task_count -- number of tasks analyzed
+  model     -- model name used"
+  (let* ((summary (alist-get 'summary summary-data))
+         (task-count (alist-get 'task_count summary-data))
+         (model (alist-get 'model summary-data))
          (buffer (get-buffer-create asana-org-ai-summary-buffer-name)))
     (with-current-buffer buffer
-      (erase-buffer)
-      (insert "#+TITLE: Asana Org - AI Summary\n")
-      (insert "#+OPTIONS: toc:t num:t\n")
-      (insert "\n")
-      
-      (when summary
-        (insert "* Summary\n")
-        (insert summary "\n\n"))
-      
-      (when digest
-        (insert "* Discussion Digest\n")
-        (insert digest "\n\n"))
-      
-      (when tasks
-        (insert "* Task Details\n")
-        (dolist (task tasks)
-          (insert (format "** %s\n" (alist-get 'name task)))
-          (insert (format "   - Status: %s\n"
-                          (if (alist-get 'completed task) "Completed" "In Progress")))
-          (insert (format "   - Due: %s\n" (or (alist-get 'due_on task) "Not set")))
-          (insert "\n")))
-      
-      (insert "* Note\n")
-      (insert "AI output is advisory.  All changes require manual approval via preview/apply.\n")
-      
-      (goto-char (point-min))
-      (org-mode)
-      (view-mode +1))
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert "#+TITLE: Asana Org - AI Summary\n")
+        (insert "#+OPTIONS: toc:nil num:nil\n")
+        (insert "\n")
+
+        (when summary
+          (insert "* Summary\n")
+          (insert summary "\n\n"))
+
+        (insert "* Metadata\n")
+        (insert (format "- Tasks analyzed: %s\n" (or task-count "?")))
+        (insert (format "- Model: %s\n" (or model "unknown")))
+        (insert "\n")
+
+        (insert "* Note\n")
+        (insert "AI output is advisory.  All changes require manual approval via preview/apply.\n")
+
+        (goto-char (point-min))
+        (org-mode)
+        (view-mode +1)))
     (pop-to-buffer buffer)))
 
 ;;;; Utility Functions
