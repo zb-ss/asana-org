@@ -255,6 +255,22 @@ class SyncEngine:
 
         return self._asana_client
 
+    @staticmethod
+    def _asana_task_to_dict(asana_task: Any) -> dict[str, Any]:
+        """Convert AsanaTask object to dict format for processing."""
+        return {
+            "gid": asana_task.gid,
+            "name": asana_task.name,
+            "completed": asana_task.completed,
+            "permalink_url": asana_task.permalink_url,
+            "modified_at": asana_task.modified_at.isoformat(),
+            "due_on": asana_task.due_on,
+            "due_at": asana_task.due_at,
+            "start_on": asana_task.start_on,
+            "notes": asana_task.notes,
+            "memberships": asana_task.memberships,
+        }
+
     def pull(
         self,
         force: bool = False,
@@ -289,38 +305,75 @@ class SyncEngine:
                 if self.use_mock:
                     logger.info("using_mock_data")
                     tasks = MockDataGenerator.generate_tasks()
+                    result.sections = MockDataGenerator.generate_sections_by_project()
                 else:
-                    # Use real Asana API
+                    # Use real Asana API via user_task_list for proper
+                    # My Tasks section grouping
                     client = self.asana_client
                     if client:
                         logger.info("fetching_tasks_from_asana")
                         workspace_gid = get_settings().sync.workspace_gid
-                        asana_tasks = client.get_my_tasks(
-                            workspace_gid=workspace_gid,
-                            limit=limit or 100,
-                            completed_since="now" if incomplete_only else None,
-                            modified_since=modified_since,
-                        )
-                        # Convert AsanaTask objects to dict format for processing
+                        completed_since = "now" if incomplete_only else None
+
                         tasks = []
-                        for asana_task in asana_tasks:
-                            task_dict = {
-                                "gid": asana_task.gid,
-                                "name": asana_task.name,
-                                "completed": asana_task.completed,
-                                "permalink_url": asana_task.permalink_url,
-                                "modified_at": asana_task.modified_at.isoformat(),
-                                "due_on": asana_task.due_on,
-                                "due_at": asana_task.due_at,
-                                "start_on": asana_task.start_on,
-                                "notes": asana_task.notes,
-                                "memberships": asana_task.memberships,
-                            }
-                            tasks.append(task_dict)
+                        # Get user_task_list and its sections
+                        if workspace_gid:
+                            try:
+                                utl = client.get_user_task_list(workspace_gid)
+                                utl_gid = utl.get("gid")
+                            except Exception:
+                                utl_gid = None
+                        else:
+                            utl_gid = None
+
+                        if utl_gid:
+                            # Fetch My Tasks sections
+                            my_sections = client.get_sections(utl_gid)
+                            result.sections["my-tasks"] = my_sections
+
+                            # Fetch tasks per section to preserve section assignment
+                            seen_gids: set[str] = set()
+                            for section in my_sections:
+                                section_gid = section["gid"]
+                                section_name = section["name"]
+                                section_tasks = client.get_tasks_for_section(
+                                    section_gid=section_gid,
+                                    limit=limit or 100,
+                                    completed_since=completed_since,
+                                )
+                                for asana_task in section_tasks:
+                                    if asana_task.gid in seen_gids:
+                                        continue
+                                    seen_gids.add(asana_task.gid)
+                                    task_dict = self._asana_task_to_dict(asana_task)
+                                    # Inject the My Tasks section assignment
+                                    task_dict["my_tasks_section_gid"] = section_gid
+                                    task_dict["my_tasks_section_name"] = section_name
+                                    tasks.append(task_dict)
+                            logger.info(
+                                "fetched_my_tasks_by_section",
+                                total_tasks=len(tasks),
+                                sections=len(my_sections),
+                            )
+                        else:
+                            # Fallback: no workspace GID, use assignee endpoint
+                            logger.warning("no_workspace_gid_using_assignee_endpoint")
+                            asana_tasks = client.get_my_tasks(
+                                workspace_gid=workspace_gid,
+                                limit=limit or 100,
+                                completed_since=completed_since,
+                                modified_since=modified_since,
+                            )
+                            tasks = [
+                                self._asana_task_to_dict(t) for t in asana_tasks
+                            ]
                     else:
                         # Fallback to mock if client creation failed
                         logger.warning("api_client_unavailable_using_mock")
                         tasks = MockDataGenerator.generate_tasks()
+                        result.sections = (
+                            MockDataGenerator.generate_sections_by_project()
+                        )
 
                 # Process tasks
                 for task_data in tasks[:limit] if limit else tasks:
@@ -329,29 +382,6 @@ class SyncEngine:
 
                 # Store full tasks array for Elisp consumption
                 result.tasks = tasks[:limit] if limit else tasks
-
-                # Fetch ordered sections for each project
-                if self.use_mock:
-                    result.sections = MockDataGenerator.generate_sections_by_project()
-                else:
-                    client = self.asana_client
-                    if client:
-                        project_gids: set[str] = set()
-                        for task_data in result.tasks:
-                            for mem in task_data.get("memberships", []):
-                                proj = mem.get("project")
-                                if isinstance(proj, dict) and proj.get("gid"):
-                                    project_gids.add(proj["gid"])
-                        for pgid in project_gids:
-                            try:
-                                sections = client.get_sections(pgid)
-                                result.sections[pgid] = sections
-                            except Exception as e:
-                                logger.warning(
-                                    "section_fetch_failed",
-                                    project_gid=pgid,
-                                    error=str(e),
-                                )
 
                 # Update sync run
                 run.status = "completed"

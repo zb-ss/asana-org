@@ -523,6 +523,65 @@ class AsanaClient:
         )
         return cast(list[dict[str, Any]], response.get("data", []))
 
+    def get_user_task_list(self, workspace_gid: str) -> dict[str, Any]:
+        """Get the user's My Tasks (user_task_list) for a workspace.
+
+        Args:
+            workspace_gid: Workspace GID
+
+        Returns:
+            User task list dict with gid and name
+
+        Raises:
+            AsanaAPIError: If the API call fails
+        """
+        response = self._request(
+            "GET",
+            "/users/me/user_task_list",
+            params={
+                "workspace": workspace_gid,
+                "opt_fields": "gid,name",
+            },
+        )
+        return cast(dict[str, Any], response.get("data", {}))
+
+    def get_tasks_for_section(
+        self,
+        section_gid: str,
+        limit: int = 100,
+        completed_since: str | None = None,
+    ) -> list[AsanaTask]:
+        """Get tasks in a specific section.
+
+        Args:
+            section_gid: Section GID
+            limit: Maximum number of tasks to fetch
+            completed_since: ISO date or 'now' for incomplete only
+
+        Returns:
+            List of AsanaTask objects
+
+        Raises:
+            AsanaAPIError: If the API call fails
+        """
+        params: dict[str, Any] = {
+            "opt_fields": self.TASK_FIELDS,
+            "limit": min(limit, 100),
+        }
+        if completed_since:
+            params["completed_since"] = completed_since
+
+        tasks: list[AsanaTask] = []
+        response = self._request(
+            "GET",
+            f"/sections/{section_gid}/tasks",
+            params=params,
+        )
+        data = response.get("data", [])
+        for task_data in data:
+            tasks.append(self._parse_task(task_data))
+        return tasks
+
     def close(self) -> None:
         """Close the client session."""
         self._session.close()
