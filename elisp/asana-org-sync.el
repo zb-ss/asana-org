@@ -16,6 +16,7 @@
 ;;; Code:
 
 (require 'json)
+(require 'org)
 (require 'seq)
 (require 'org)
 
@@ -44,6 +45,7 @@
 
 (defconst asana-org-sync-commands
   '(("sync-pull" . "Pull tasks from Asana")
+    ("detect-changes" . "Detect local org changes vs cached state")
     ("sync-preview" . "Preview pending changes")
     ("sync-apply" . "Apply mutations to Asana")
     ("move-task" . "Move task to project/section")
@@ -189,48 +191,27 @@ Returns the response envelope with tasks in data.tasks array."
 
 (defun asana-org-sync-preview (&optional dry-run since)
   "Preview pending changes.
-DRY-RUN shows what would happen without making changes.
-SINCE filters changes since timestamp.
-Stores pending changes in `asana-org-sync--pending-changes' for apply."
+DRY-RUN and SINCE are accepted for API compatibility but currently
+unused; detect-changes scans all org files unconditionally.
+Runs detect-changes first to find org file modifications, then
+stores pending changes in `asana-org-sync--pending-changes' for apply."
   (interactive)
-  (asana-org-log-info "Sync preview: dry-run=%s" dry-run)
-  (let* ((args (asana-org-sync--build-sync-preview-args dry-run since))
-         (response (apply #'asana-org-call-json args))
-         (data (asana-org-sync--parse-response response))
-         (pending-changes (or (alist-get 'pending_changes data) '()))
-         (version (alist-get 'version data))
-         (command (alist-get 'command response)))
-    (asana-org-log-info "Preview response: version=%s command=%s" version command)
-    
-    ;; Classify changes into blocked and non-blocked
-    (setq asana-org-sync--pending-changes pending-changes)
-    (setq asana-org-sync--blocked-changes
-          (seq-filter (lambda (change)
-                        (let ((conflict (alist-get 'conflict change)))
-                          (and conflict
-                               (alist-get 'blocking conflict))))
-                      pending-changes))
-    (setq asana-org-sync--nonblocked-changes
-          (seq-filter (lambda (change)
-                        (let ((conflict (alist-get 'conflict change)))
-                          (or (not conflict)
-                              (not (alist-get 'blocking conflict)))))
-                      pending-changes))
-    
-    (asana-org-log-info "Preview: %d total, %d blocked, %d non-blocked"
-                        (length pending-changes)
-                        (length asana-org-sync--blocked-changes)
-                        (length asana-org-sync--nonblocked-changes))
-    
-    ;; Render preview buffer
-    (require 'asana-org-render)
-    (asana-org-render-preview response)
-    
-    (when (called-interactively-p 'any)
-      (message "Preview: %d changes, %d blocked"
-               (length pending-changes)
-               (length asana-org-sync--blocked-changes)))
-    response))
+  (ignore dry-run since)
+  (asana-org-log-info "Sync preview")
+  (let ((detect-response (asana-org-sync-detect-changes)))
+    ;; detect-changes already stored results in pending-changes vars
+    ;; and rendered the preview buffer, so just log and return
+    (let* ((data (alist-get 'data detect-response))
+           (pending-changes (or (alist-get 'pending_changes data) '())))
+      (asana-org-log-info "Preview via detect-changes: %d total, %d blocked, %d non-blocked"
+                          (length pending-changes)
+                          (length asana-org-sync--blocked-changes)
+                          (length asana-org-sync--nonblocked-changes))
+      (when (called-interactively-p 'any)
+        (message "Preview: %d changes, %d blocked"
+                 (length pending-changes)
+                 (length asana-org-sync--blocked-changes)))
+      detect-response)))
 
 (defun asana-org-sync--apply (&optional dry-run)
   "Apply pending changes to Asana.
@@ -520,6 +501,112 @@ Useful if preview is stale and needs to be re-run."
   (setq asana-org-sync--nonblocked-changes nil)
   (asana-org-log-info "Cleared pending changes")
   (message "Cleared pending changes"))
+
+;;;; Org State Extraction
+
+(defun asana-org-sync--org-date-to-iso (timestamp)
+  "Parse org TIMESTAMP to ISO date string.
+Converts `<2026-03-15 Sat>' to `2026-03-15'.
+Returns nil if TIMESTAMP is nil or empty."
+  (when (and timestamp (stringp timestamp) (not (string-empty-p timestamp)))
+    (if (string-match "\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}\\)" timestamp)
+        (match-string 1 timestamp)
+      nil)))
+
+(defun asana-org-sync--heading-to-task-state ()
+  "Extract task state from org heading at point.
+Returns an alist with keys: gid, completed, due_on, start_on, local_hash.
+Returns nil if the heading has no ASANA_GID property."
+  (let ((gid (org-entry-get (point) "ASANA_GID")))
+    (when gid
+      (let* ((todo-state (org-get-todo-state))
+             (is-completed (and todo-state (string= todo-state "DONE")))
+             (deadline-raw (org-entry-get (point) "DEADLINE"))
+             (scheduled-raw (org-entry-get (point) "SCHEDULED"))
+             (due-on (asana-org-sync--org-date-to-iso deadline-raw))
+             (start-on (asana-org-sync--org-date-to-iso scheduled-raw))
+             ;; Compute local hash from heading content
+             (heading-text (org-get-heading t t t t))
+             (body (org-get-entry))
+             (hash-input (format "%s\n%s" (or heading-text "") (or body "")))
+             (local-hash (secure-hash 'sha256 hash-input)))
+        (list (cons 'gid gid)
+              (cons 'completed (if is-completed t :json-false))
+              (cons 'due_on (or due-on :json-null))
+              (cons 'start_on (or start-on :json-null))
+              (cons 'local_hash local-hash))))))
+
+(defun asana-org-sync--extract-task-states (&optional file)
+  "Extract task states from org FILE or all files in `asana-org-root-directory'.
+Returns a list of alists, each with keys: gid, completed, due_on,
+start_on, local_hash."
+  (let ((files (if file
+                   (list file)
+                 (when (and (boundp 'asana-org-root-directory)
+                            (file-directory-p asana-org-root-directory))
+                   (directory-files asana-org-root-directory t "\\.org$"))))
+        (result nil))
+    (dolist (f files)
+      (when (file-readable-p f)
+        (with-temp-buffer
+          (insert-file-contents f)
+          (org-mode)
+          (goto-char (point-min))
+          (while (re-search-forward "^\\*+ " nil t)
+            (beginning-of-line)
+            (let ((state (asana-org-sync--heading-to-task-state)))
+              (when state
+                (push state result)))
+            (forward-line 1)))))
+    (nreverse result)))
+
+;;;; Detect Changes Command
+
+(defun asana-org-sync-detect-changes ()
+  "Detect changes between local org files and cached Asana state.
+Extracts task states from org files, sends them to the bridge
+detect-changes command, and stores the result for preview/apply."
+  (interactive)
+  (asana-org-log-info "Detecting changes in org files")
+  (let* ((task-states (asana-org-sync--extract-task-states))
+         ;; Convert :json-false and :json-null for serialization
+         (request-payload (list (cons 'version "1")
+                                (cons 'command "detect-changes")
+                                (cons 'tasks (vconcat task-states))))
+         (json-payload (json-serialize request-payload))
+         (args (list "detect-changes" "--json" "-"))
+         (response (asana-org-call-json-with-stdin args json-payload))
+         (data (asana-org-sync--parse-response response))
+         (pending-changes (or (alist-get 'pending_changes data) '()))
+         (summary (alist-get 'summary data))
+         (warnings (alist-get 'warnings data)))
+
+    ;; Store pending changes for preview/apply workflow
+    (setq asana-org-sync--pending-changes pending-changes)
+    (setq asana-org-sync--blocked-changes nil)
+    (setq asana-org-sync--nonblocked-changes pending-changes)
+
+    (asana-org-log-info "Detected %d changes (%d tasks scanned)"
+                        (length pending-changes)
+                        (length task-states))
+
+    ;; Log warnings from bridge
+    (when warnings
+      (dolist (w (if (vectorp warnings) (append warnings nil) warnings))
+        (asana-org-log-warn "detect-changes: %s" w)))
+
+    ;; Render preview buffer with results
+    (require 'asana-org-render)
+    (asana-org-render-preview response)
+
+    (when (called-interactively-p 'any)
+      (if summary
+          (message "Detected %d changes (status: %d, dates: %d)"
+                   (or (alist-get 'total summary) (length pending-changes))
+                   (or (alist-get 'status_changes summary) 0)
+                   (or (alist-get 'date_changes summary) 0))
+        (message "Detected %d changes" (length pending-changes))))
+    response))
 
 (provide 'asana-org-sync)
 

@@ -78,6 +78,64 @@ def build_error_envelope(
     return envelope
 
 
+def _read_json_input(json_input: str, command_name: str) -> dict[str, Any] | None:
+    """Read and parse JSON from stdin ('-') or a file path.
+
+    Args:
+        json_input: Either '-' for stdin or a file path
+        command_name: Command name for error envelopes
+
+    Returns:
+        Parsed JSON dict, or None if input was empty
+
+    Raises:
+        typer.Exit: On parse errors (after printing error envelope)
+    """
+    if json_input == "-":
+        input_data = sys.stdin.read()
+        if not input_data.strip():
+            return None
+        try:
+            return json.loads(input_data)  # type: ignore[no-any-return]
+        except json.JSONDecodeError as e:
+            error_envelope = build_error_envelope(
+                command=command_name,
+                code="INVALID_REQUEST",
+                message=f"Invalid JSON input: {e}",
+            )
+            print(json.dumps(error_envelope, indent=2))
+            raise typer.Exit(code=1) from None
+
+    input_path = Path(json_input)
+    if not input_path.exists():
+        error_envelope = build_error_envelope(
+            command=command_name,
+            code="NOT_FOUND",
+            message=f"Input file not found: {json_input}",
+        )
+        print(json.dumps(error_envelope, indent=2))
+        raise typer.Exit(code=1)
+    try:
+        with open(input_path) as f:
+            return json.load(f)  # type: ignore[no-any-return]
+    except json.JSONDecodeError as e:
+        error_envelope = build_error_envelope(
+            command=command_name,
+            code="INVALID_REQUEST",
+            message=f"Invalid JSON in file {json_input}: {e}",
+        )
+        print(json.dumps(error_envelope, indent=2))
+        raise typer.Exit(code=1) from None
+    except Exception as e:
+        error_envelope = build_error_envelope(
+            command=command_name,
+            code="INTERNAL_ERROR",
+            message=f"Failed to read input file: {e}",
+        )
+        print(json.dumps(error_envelope, indent=2))
+        raise typer.Exit(code=1) from None
+
+
 @app.command()
 def doctor() -> None:
     """Run diagnostics to verify bridge setup."""
@@ -426,51 +484,7 @@ def sync_apply(
         # Parse JSON input if provided
         mutations_json = None
         if json_input:
-            if json_input == "-":
-                # Read from stdin
-                input_data = sys.stdin.read()
-                if input_data.strip():
-                    try:
-                        mutations_json = json.loads(input_data)
-                    except json.JSONDecodeError as e:
-                        error_envelope = build_error_envelope(
-                            command="sync-apply",
-                            code="INVALID_REQUEST",
-                            message=f"Invalid JSON input: {e}",
-                        )
-                        print(json.dumps(error_envelope, indent=2))
-                        raise typer.Exit(code=1) from None
-            else:
-                # Read from file
-                input_path = Path(json_input)
-                if not input_path.exists():
-                    error_envelope = build_error_envelope(
-                        command="sync-apply",
-                        code="NOT_FOUND",
-                        message=f"Input file not found: {json_input}",
-                    )
-                    print(json.dumps(error_envelope, indent=2))
-                    raise typer.Exit(code=1)
-                try:
-                    with open(input_path) as f:
-                        mutations_json = json.load(f)
-                except json.JSONDecodeError as e:
-                    # Return JSON error envelope for malformed JSON file
-                    error_envelope = build_error_envelope(
-                        command="sync-apply",
-                        code="INVALID_REQUEST",
-                        message=f"Invalid JSON in file {json_input}: {e}",
-                    )
-                    print(json.dumps(error_envelope, indent=2))
-                    raise typer.Exit(code=1) from None
-                except Exception as e:
-                    error_envelope = build_error_envelope(
-                        command="sync-apply",
-                        code="INTERNAL_ERROR",
-                        message=f"Failed to read input file: {e}",
-                    )
-                    print(json.dumps(error_envelope, indent=2))
-                    raise typer.Exit(code=1) from None
+            mutations_json = _read_json_input(json_input, "sync-apply")
 
         # If no JSON input, use traditional apply
         if not mutations_json:
@@ -855,6 +869,106 @@ def status(
         else:
             console.print(f"[red]Error getting status: {e}[/red]")
         logger.error("status_failed", error=str(e))
+        raise typer.Exit(code=1) from None
+
+
+@app.command("detect-changes")
+def detect_changes(
+    json_input: str | None = typer.Option(
+        None,
+        "--json",
+        "-j",
+        help="JSON input file or '-' for stdin",
+    ),
+) -> None:
+    """Detect changes between org file state and cached snapshots.
+
+    Accepts task states via JSON stdin and compares against the latest
+    TaskSnapshot in the database.  Returns a list of pending changes
+    that can be fed into sync-preview/sync-apply.
+    """
+    try:
+        # Parse JSON input
+        tasks_json: dict[str, Any] | None = None
+        if json_input:
+            tasks_json = _read_json_input(json_input, "detect-changes")
+
+        if not tasks_json:
+            error_envelope = build_error_envelope(
+                command="detect-changes",
+                code="INVALID_REQUEST",
+                message="No JSON input provided. Use --json - for stdin.",
+            )
+            print(json.dumps(error_envelope, indent=2))
+            raise typer.Exit(code=1)
+
+        # Validate envelope structure
+        if not isinstance(tasks_json, dict):
+            error_envelope = build_error_envelope(
+                command="detect-changes",
+                code="INVALID_REQUEST",
+                message="Input must be a JSON object",
+            )
+            print(json.dumps(error_envelope, indent=2))
+            raise typer.Exit(code=1)
+
+        version = tasks_json.get("version")
+        if version != "1":
+            error_envelope = build_error_envelope(
+                command="detect-changes",
+                code="INVALID_REQUEST",
+                message=f"Unsupported version '{version}': expected '1'",
+            )
+            print(json.dumps(error_envelope, indent=2))
+            raise typer.Exit(code=1)
+
+        command = tasks_json.get("command")
+        if command != "detect-changes":
+            error_envelope = build_error_envelope(
+                command="detect-changes",
+                code="INVALID_REQUEST",
+                message=f"Invalid command '{command}': expected 'detect-changes'",
+            )
+            print(json.dumps(error_envelope, indent=2))
+            raise typer.Exit(code=1)
+
+        tasks_list = tasks_json.get("tasks")
+        if not isinstance(tasks_list, list):
+            error_envelope = build_error_envelope(
+                command="detect-changes",
+                code="INVALID_REQUEST",
+                message="Missing or invalid 'tasks' array",
+            )
+            print(json.dumps(error_envelope, indent=2))
+            raise typer.Exit(code=1)
+
+        engine = get_sync_engine()
+        result = engine.detect_changes(task_states=tasks_list)
+
+        response: dict[str, Any] = {
+            "version": "1",
+            "command": "detect-changes",
+            "status": "success",
+            "data": {
+                "pending_changes": result.pending_changes,
+                "summary": result.summary,
+            },
+        }
+        if result.warnings:
+            response["data"]["warnings"] = result.warnings
+
+        print(json.dumps(response, indent=2))
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        error_envelope = build_error_envelope(
+            command="detect-changes",
+            code="INTERNAL_ERROR",
+            message=str(e),
+        )
+        print(json.dumps(error_envelope, indent=2))
+        logger.error("detect_changes_failed", error=str(e))
         raise typer.Exit(code=1) from None
 
 

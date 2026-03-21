@@ -26,6 +26,8 @@
 (declare-function asana-org-get-property "asana-org")
 (declare-function asana-org-sync-status "asana-org-sync")
 (declare-function asana-org-sync--section-name-for-gid "asana-org-sync")
+;; Functions from asana-org-sync.el
+(declare-function asana-org-sync-detect-changes "asana-org-sync")
 
 ;; Variables/constants from asana-org.el
 (defvar asana-org-prop-gid)
@@ -50,6 +52,12 @@
   :key "v"
   (interactive)
   (asana-org-sync-preview))
+
+(transient-define-suffix asana-org-transient-detect ()
+  "Detect changes between org files and Asana cache."
+  :key "d"
+  (interactive)
+  (asana-org-sync-detect-changes))
 
 (transient-define-suffix asana-org-transient-apply ()
   "Apply approved changes to Asana."
@@ -102,7 +110,7 @@
 
 (transient-define-suffix asana-org-transient-open-cache-dir ()
   "Open cache directory in dired."
-  :key "d"
+  :key "D"
   (interactive)
   (dired asana-org-cache-directory))
 
@@ -122,6 +130,7 @@
              (format "Root: %s" asana-org-root-directory)))
    ["Sync"
     ("p" "Pull tasks" asana-org-transient-pull)
+    ("d" "Detect changes" asana-org-transient-detect)
     ("v" "Preview changes" asana-org-transient-preview)
     ("a" "Apply changes" asana-org-transient-apply)]
    ["Actions"
@@ -130,7 +139,7 @@
    ["Utility"
     ("s" "Status" asana-org-transient-status)
     ("l" "Open log" asana-org-transient-open-log)
-    ("d" "Open cache dir" asana-org-transient-open-cache-dir)
+    ("D" "Open cache dir" asana-org-transient-open-cache-dir)
     ("C" "Configure" asana-org-transient-configure)]
    [("q" "Quit" transient-quit-one)]]
   (interactive)
@@ -146,6 +155,7 @@
              (format "Dry-run: %s" (if asana-org-dry-run "ON" "OFF"))))
    ["Workflow"
     ("p" "Pull from Asana" asana-org-transient-pull)
+    ("d" "Detect changes" asana-org-transient-detect)
     ("v" "Preview changes" asana-org-transient-preview)
     ("a" "Apply changes" asana-org-transient-apply)]
    [("q" "Quit" transient-quit-one)]]
