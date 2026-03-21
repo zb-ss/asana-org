@@ -758,12 +758,173 @@ class SyncEngine:
 
         return result
 
+    @staticmethod
+    def _get_latest_snapshot(
+        session: Session, task_gid: str
+    ) -> TaskSnapshot | None:
+        """Return the most recent TaskSnapshot for a given task GID."""
+        return (
+            session.query(TaskSnapshot)
+            .filter(TaskSnapshot.gid == task_gid)
+            .order_by(TaskSnapshot.snapshot_at.desc())
+            .first()
+        )
+
+    @staticmethod
+    def _ensure_aware(dt: datetime) -> datetime:
+        """Ensure a datetime is timezone-aware (assume UTC if naive).
+
+        SQLite may return naive datetimes despite DateTime(timezone=True).
+        """
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=UTC)
+        return dt
+
+    def _check_remote_conflict(
+        self,
+        client: AsanaClient,
+        task_gid: str,
+        mutation_type: str,
+        payload: dict[str, Any],
+        session: Session,
+    ) -> dict[str, Any] | None:
+        """Check for field-level conflicts between remote state and baseline.
+
+        Fetches the current remote task from Asana and compares against the
+        latest local TaskSnapshot (baseline). If the specific field being
+        mutated was also changed remotely, returns a conflict dict. If only
+        unrelated fields changed, returns a warning dict. Otherwise returns
+        None (no conflict).
+
+        Args:
+            client: Asana API client
+            task_gid: Task GID to check
+            mutation_type: The operation type being applied
+            payload: Mutation payload
+            session: Database session for snapshot lookup
+
+        Returns:
+            Conflict/warning dict, or None if clean
+        """
+        try:
+            remote_task = client.get_task(task_gid)
+        except Exception as e:
+            logger.warning(
+                "conflict_check_remote_fetch_failed",
+                task_gid=task_gid,
+                error=str(e),
+            )
+            return {
+                "type": "warning",
+                "warning": f"Could not fetch remote task for conflict check: {e}",
+            }
+
+        baseline = self._get_latest_snapshot(session, task_gid)
+        if baseline is None:
+            logger.info("conflict_check_no_baseline", task_gid=task_gid)
+            return {
+                "type": "warning",
+                "warning": "No baseline snapshot found for task; skipping conflict check.",
+            }
+
+        remote_modified_str = remote_task.get("modified_at", "")
+        if not remote_modified_str:
+            return None
+
+        remote_modified_at = self._ensure_aware(
+            datetime.fromisoformat(remote_modified_str.replace("Z", "+00:00"))
+        )
+        baseline_modified = self._ensure_aware(baseline.modified_at)
+
+        if remote_modified_at <= baseline_modified:
+            return None
+
+        # Remote is newer -- check whether the *specific* mutated field changed
+        conflict = self._detect_field_conflict(
+            mutation_type, payload, remote_task, baseline
+        )
+
+        if conflict is not None:
+            logger.warning(
+                "conflict_detected_field_level",
+                task_gid=task_gid,
+                field=conflict["field"],
+            )
+            return {
+                "type": "conflict",
+                "status": "conflict",
+                "mutation_type": mutation_type,
+                "task_gid": task_gid,
+                "conflict": {
+                    **conflict,
+                    "remote_modified_at": remote_modified_at.isoformat(),
+                    "baseline_modified_at": baseline_modified.isoformat(),
+                },
+                "message": "Remote task was modified after your last pull. Pull again and re-apply.",
+            }
+
+        logger.info(
+            "conflict_check_unrelated_change",
+            task_gid=task_gid,
+            remote_modified_at=remote_modified_at.isoformat(),
+            baseline_modified_at=baseline_modified.isoformat(),
+        )
+        return {
+            "type": "warning",
+            "warning": "Remote task was modified since baseline, but the mutated field was not changed remotely.",
+        }
+
+    @staticmethod
+    def _detect_field_conflict(
+        mutation_type: str,
+        payload: dict[str, Any],
+        remote_task: dict[str, Any],
+        baseline: TaskSnapshot,
+    ) -> dict[str, Any] | None:
+        """Return conflict details if the mutated field also changed remotely.
+
+        Returns:
+            Dict with field/baseline_value/remote_value/proposed_value,
+            or None if no field-level conflict.
+        """
+        if mutation_type in ("update_status", "complete_task", "uncomplete_task"):
+            remote_completed = remote_task.get("completed", False)
+            if remote_completed != baseline.completed:
+                return {
+                    "field": "completed",
+                    "baseline_value": baseline.completed,
+                    "remote_value": remote_completed,
+                    "proposed_value": payload.get("completed"),
+                }
+
+        elif mutation_type in ("update_dates", "update_due_on", "update_start_on"):
+            if "due_on" in payload and remote_task.get("due_on") != baseline.due_on:
+                return {
+                    "field": "due_on",
+                    "baseline_value": baseline.due_on,
+                    "remote_value": remote_task.get("due_on"),
+                    "proposed_value": payload.get("due_on"),
+                }
+            if "start_on" in payload and remote_task.get("start_on") != baseline.start_on:
+                return {
+                    "field": "start_on",
+                    "baseline_value": baseline.start_on,
+                    "remote_value": remote_task.get("start_on"),
+                    "proposed_value": payload.get("start_on"),
+                }
+
+        return None
+
     def _apply_mutation_via_api(
         self,
         mutation: PendingMutation,
         session: Session,
     ) -> dict[str, Any]:
         """Apply a single mutation via Asana API.
+
+        Performs remote conflict detection before executing the mutation.
+        If the field being mutated was also changed on the remote, the
+        mutation is blocked and a conflict result is returned.
 
         Args:
             mutation: The mutation to apply
@@ -784,18 +945,54 @@ class SyncEngine:
         payload = mutation.payload
         task_gid = mutation.task_gid
 
+        # Conflict detection: check remote state before applying
+        # Skip for comment/move operations (comments are additive, moves
+        # don't have a field-level conflict concept in the same way)
+        apply_warning: str | None = None
+        if operation in (
+            "update_status",
+            "complete_task",
+            "uncomplete_task",
+            "update_dates",
+            "update_due_on",
+            "update_start_on",
+        ):
+            conflict_result = self._check_remote_conflict(
+                client, task_gid, operation, payload, session
+            )
+            if conflict_result is not None:
+                if conflict_result.get("type") == "conflict":
+                    return {
+                        "success": False,
+                        "error": conflict_result.get("message", "Conflict detected"),
+                        "error_code": "CONFLICT",
+                        "conflict": conflict_result.get("conflict"),
+                        "status": "conflict",
+                    }
+                # Warning case: capture and continue
+                apply_warning = conflict_result.get("warning")
+                if apply_warning:
+                    logger.info(
+                        "apply_with_warning",
+                        task_gid=task_gid,
+                        warning=apply_warning,
+                    )
+
         try:
             if operation in ("update_status", "complete_task", "uncomplete_task"):
                 # Handle status/completion changes
                 completed = payload.get("completed", False)
                 result = client.update_task(task_gid, completed=completed)
                 if result.success:
-                    return {
+                    success_result: dict[str, Any] = {
                         "success": True,
                         "action": "update_status",
                         "task_gid": task_gid,
                         "completed": completed,
                     }
+                    if apply_warning:
+                        success_result["warning"] = apply_warning
+                    return success_result
                 return {
                     "success": False,
                     "error": result.error or "Unknown error",
@@ -810,13 +1007,16 @@ class SyncEngine:
                 start_on = payload.get("start_on")
                 result = client.update_task(task_gid, due_on=due_on, start_on=start_on)
                 if result.success:
-                    return {
+                    success_result = {
                         "success": True,
                         "action": "update_dates",
                         "task_gid": task_gid,
                         "due_on": due_on,
                         "start_on": start_on,
                     }
+                    if apply_warning:
+                        success_result["warning"] = apply_warning
+                    return success_result
                 return {
                     "success": False,
                     "error": result.error or "Unknown error",
@@ -1649,17 +1849,47 @@ class SyncEngine:
                                 }
                             )
                         else:
-                            # Real API apply
+                            # Real API apply (includes remote conflict detection)
                             api_result = self._apply_mutation_via_api(mutation, session)
 
                             if api_result.get("success"):
-                                results_list.append(
-                                    {
-                                        "idempotency_key": str(idempotency_key),
-                                        "status": "applied",
-                                        "details": api_result,
-                                    }
+                                entry: dict[str, Any] = {
+                                    "idempotency_key": str(idempotency_key),
+                                    "status": "applied",
+                                    "details": api_result,
+                                }
+                                # Propagate warning from conflict check
+                                if api_result.get("warning"):
+                                    entry["warning"] = api_result["warning"]
+                                results_list.append(entry)
+                            elif api_result.get("status") == "conflict":
+                                # Remote conflict detected -- block mutation
+                                mutation.status = "failed"
+                                mutation.error_message = api_result.get(
+                                    "error", "Conflict detected"
                                 )
+                                self._increment_attempts(mutation)
+
+                                conflict_entry: dict[str, Any] = {
+                                    "idempotency_key": str(idempotency_key),
+                                    "status": "conflict",
+                                    "mutation_type": mutation_type,
+                                    "task_gid": task_gid,
+                                    "message": api_result.get("error", "Conflict detected"),
+                                }
+                                if api_result.get("conflict"):
+                                    conflict_entry["conflict"] = api_result["conflict"]
+                                results_list.append(conflict_entry)
+                                result.failed += 1
+                                result.errors.append(
+                                    f"Mutation {idempotency_key}: {api_result.get('error')}"
+                                )
+                                logger.warning(
+                                    "mutation_remote_conflict",
+                                    idempotency_key=str(idempotency_key),
+                                    error=api_result.get("error"),
+                                )
+                                continue
                             else:
                                 # API call failed
                                 mutation.status = "failed"
@@ -1722,6 +1952,11 @@ class SyncEngine:
                             error=str(e),
                         )
 
+                # Count conflicts in results
+                conflicts_count = sum(
+                    1 for r in results_list if r.get("status") == "conflict"
+                )
+
                 # Build JSON response (wrapped in data for elisp compatibility)
                 result.results_json = {
                     "version": "1",
@@ -1733,6 +1968,7 @@ class SyncEngine:
                             "total": len(mutations_data),
                             "applied": result.applied,
                             "failed": result.failed,
+                            "conflicts": conflicts_count,
                         },
                     },
                 }
@@ -1756,10 +1992,14 @@ class SyncEngine:
                 run.status = "completed"
                 run.mutations_applied = result.applied
                 run.mutations_generated = len(mutations_data)
+                run.conflicts_detected = conflicts_count
                 run.completed_at = datetime.now(UTC)
 
                 logger.info(
-                    "apply_completed", applied=result.applied, failed=result.failed
+                    "apply_completed",
+                    applied=result.applied,
+                    failed=result.failed,
+                    conflicts=conflicts_count,
                 )
 
             except Exception as e:
