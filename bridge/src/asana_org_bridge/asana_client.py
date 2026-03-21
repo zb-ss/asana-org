@@ -83,9 +83,12 @@ class AsanaClient:
     """Client for Asana REST API."""
 
     # Fields to request for task operations
+    # Memberships require explicit dot-path sub-fields to return nested objects
     TASK_FIELDS = (
         "gid,name,completed,permalink_url,modified_at,"
-        "due_on,due_at,start_on,notes,memberships"
+        "due_on,due_at,start_on,notes,"
+        "memberships.project.gid,memberships.project.name,"
+        "memberships.section.gid,memberships.section.name"
     )
 
     def __init__(
