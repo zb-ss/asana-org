@@ -275,6 +275,7 @@ def sync_pull(
                 "status": "success",
                 "data": {
                     "tasks": result.tasks,  # Full task array for Elisp
+                    "sections": result.sections,  # project_gid -> ordered sections
                     "summary": {
                         "pulled": result.tasks_pulled,
                         "updated": result.tasks_updated,

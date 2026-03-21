@@ -150,7 +150,11 @@ Emacs `json-read' returns :json-false/:json-null but `json-serialize' rejects th
             ":END:\n")))
 
 (defun asana-org-render-task-entry (task)
-  "Render Asana TASK as Org entry string."
+  "Render Asana TASK as Org entry string at level 1."
+  (asana-org-render-task-entry-at-level task 1))
+
+(defun asana-org-render-task-entry-at-level (task level)
+  "Render Asana TASK as Org entry string at heading LEVEL."
   (let* ((parsed (asana-org-render--task-to-org task))
          (todo (car parsed))
          (props (cdr parsed))
@@ -159,9 +163,10 @@ Emacs `json-read' returns :json-false/:json-null but `json-serialize' rejects th
          (due-on (alist-get 'due_on task))
          (due-at (alist-get 'due_at task))
          (notes (alist-get 'notes task))
-         (stories (alist-get 'stories task)))
+         (stories (alist-get 'stories task))
+         (stars (make-string level ?*)))
     (concat
-     (format "* %s %s\n" todo name)
+     (format "%s %s %s\n" stars todo name)
      (asana-org-render--format-properties props)
      (when start-on (format "%s\n" (asana-org-render--format-scheduled start-on)))
      (when (or due-on due-at) (format "%s\n" (asana-org-render--format-deadline due-on due-at)))
@@ -197,6 +202,89 @@ Creates or updates Org files in `asana-org-root-directory'."
           (insert content))
         (push file updated-files)
         (asana-org-log-info "Wrote %d tasks to %s" (length project-tasks) file)))
+    updated-files))
+
+(defun asana-org-render--extract-section-gid (task project-gid)
+  "Extract section GID from TASK for the matching PROJECT-GID membership.
+Falls back to first membership if no match found."
+  (let* ((memberships (alist-get 'memberships task))
+         (match (seq-find (lambda (mem)
+                            (let* ((proj (alist-get 'project mem))
+                                   (pgid (and proj (alist-get 'gid proj))))
+                              (and pgid (string= pgid project-gid))))
+                          memberships))
+         (mem (or match (car-safe memberships)))
+         (section-obj (and mem (alist-get 'section mem))))
+    (and section-obj (alist-get 'gid section-obj))))
+
+(defun asana-org-render-tasks-with-sections (tasks sections-map)
+  "Render TASKS grouped by Asana sections using SECTIONS-MAP for ordering.
+SECTIONS-MAP is an alist mapping project-gid to an ordered vector/list
+of section objects, each with `gid' and `name' fields.
+Sections become level-1 headings, tasks become level-2 headings."
+  (let* ((by-project (seq-group-by
+                      (lambda (task)
+                        (let* ((memberships (alist-get 'memberships task))
+                               (first-mem (and memberships (listp memberships) (car-safe memberships)))
+                               (project-obj (and first-mem (alist-get 'project first-mem)))
+                               (project-gid (and project-obj (alist-get 'gid project-obj))))
+                          (or project-gid "my-tasks")))
+                      tasks))
+         (updated-files nil))
+    (pcase-dolist (`(,project-gid . ,project-tasks) by-project)
+      (let* ((file (asana-org-get-project-file project-gid))
+             (raw-sections (alist-get (intern project-gid) sections-map))
+             ;; Also try string key lookup (json-read may use strings or symbols)
+             (ordered-sections (or raw-sections
+                                   (cdr (assoc project-gid sections-map))))
+             ;; Coerce vector to list if needed
+             (ordered-sections (if (vectorp ordered-sections)
+                                   (append ordered-sections nil)
+                                 ordered-sections))
+             ;; Group tasks by section-gid within this project
+             (by-section (seq-group-by
+                          (lambda (task)
+                            (or (asana-org-render--extract-section-gid task project-gid)
+                                "unsectioned"))
+                          project-tasks))
+             (content-parts nil))
+        ;; File header
+        (push "#+TITLE: My Tasks\n" content-parts)
+        (push "#+CATEGORY: asana\n" content-parts)
+        (push "#+STARTUP: overview\n\n" content-parts)
+
+        (if ordered-sections
+            (progn
+              ;; Render each section in API order
+              (dolist (section ordered-sections)
+                (let* ((section-gid (alist-get 'gid section))
+                       (section-name (alist-get 'name section))
+                       (section-tasks (cdr (assoc section-gid by-section))))
+                  ;; Section heading (level 1)
+                  (push (format "* %s\n" section-name) content-parts)
+                  ;; Tasks in this section (level 2)
+                  (dolist (task section-tasks)
+                    (push (asana-org-render-task-entry-at-level task 2) content-parts))))
+              ;; Handle tasks not in any known section
+              (let ((unsectioned (cdr (assoc "unsectioned" by-section))))
+                (when unsectioned
+                  (push "* Unsectioned\n" content-parts)
+                  (dolist (task unsectioned)
+                    (push (asana-org-render-task-entry-at-level task 2) content-parts)))))
+          ;; Fallback: no sections data, render flat
+          (dolist (task project-tasks)
+            (push (asana-org-render-task-entry task) content-parts)))
+
+        ;; Write file
+        (let ((content (apply #'concat (nreverse content-parts))))
+          (asana-org-ensure-root-directory)
+          (with-temp-file file
+            (insert content))
+          (push file updated-files)
+          (asana-org-log-info "Wrote %d tasks (%d sections) to %s"
+                              (length project-tasks)
+                              (length ordered-sections)
+                              file))))
     updated-files))
 
 (defun asana-org-render--parse-existing-tasks (file)

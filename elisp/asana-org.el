@@ -271,7 +271,7 @@ Handles error envelopes per docs/cli-contract.md."
          (exit-code (car result))
          (output (cdr result)))
     ;; First, try to parse JSON response
-    (condition-case nil
+    (condition-case err
         (let* ((response (json-read-from-string output))
                ;; Check for error envelope in response (status is string from bridge JSON)
                (status (alist-get 'status response)))
@@ -285,6 +285,9 @@ Handles error envelopes per docs/cli-contract.md."
             (asana-org-log-error "Command failed with exit code %d: %s" exit-code output)
             (signal 'asana-org-sync-failed (list (format "Exit code %d: %s" exit-code output))))
           response)
+      (asana-org-sync-failed
+       ;; Re-raise our own signal — don't mask it as a parse error
+       (signal (car err) (cdr err)))
       (error
        ;; JSON parse failed
        (asana-org-log-error "Failed to parse JSON: %s" output)
@@ -326,7 +329,7 @@ only sees current output, not stale data from previous calls."
        (asana-org-log-error "Process failed: %s" (error-message-string err))
        (signal 'asana-org-sync-failed (list (error-message-string err)))))
     ;; First, try to parse JSON response
-    (condition-case nil
+    (condition-case err
         (let* ((response (json-read-from-string output))
                ;; Check for error envelope in response (status is string from bridge JSON)
                (status (alist-get 'status response)))
@@ -340,6 +343,9 @@ only sees current output, not stale data from previous calls."
             (asana-org-log-error "Command failed with exit code %d: %s" exit-code output)
             (signal 'asana-org-sync-failed (list (format "Exit code %d: %s" exit-code output))))
           response)
+      (asana-org-sync-failed
+       ;; Re-raise our own signal — don't mask it as a parse error
+       (signal (car err) (cdr err)))
       (error
        ;; JSON parse failed
        (asana-org-log-error "Failed to parse JSON: %s" output)
@@ -434,12 +440,15 @@ By default pulls only incomplete tasks."
     (let* ((response (apply #'asana-org-call-json args))
            (data (alist-get 'data response))
            (tasks (alist-get 'tasks data))
+           (sections (alist-get 'sections data))
            (pulled-count (length tasks)))
       (asana-org-log-info "Pulled %d tasks" pulled-count)
       (if (= pulled-count 0)
           (message "Asana Org: No incomplete tasks found")
         (message "Asana Org: Syncing %d tasks..." pulled-count)
-        (let ((files (asana-org-render-tasks tasks)))
+        (let ((files (if sections
+                        (asana-org-render-tasks-with-sections tasks sections)
+                      (asana-org-render-tasks tasks))))
           (message "Asana Org: Pulled %d tasks into %d file(s)" pulled-count (length files))
           ;; Open the first generated org file
           (when (and files (car files))
@@ -618,6 +627,12 @@ Uses Asana MCP for summaries."
 Delegates to `asana-org-render-tasks' in asana-org-render.el."
   (require 'asana-org-render)
   (asana-org-render-tasks tasks))
+
+(defun asana-org-render-tasks-with-sections (tasks sections)
+  "Render TASKS grouped by SECTIONS to Org files.
+Delegates to `asana-org-render-tasks-with-sections' in asana-org-render.el."
+  (require 'asana-org-render)
+  (asana-org-render-tasks-with-sections tasks sections))
 
 (defun asana-org-render-preview (preview-data)
   "Render PREVIEW-DATA to preview buffer.
