@@ -132,7 +132,7 @@ Emacs `json-read' returns :json-false/:json-null but `json-serialize' rejects th
             (mapconcat (lambda (prop)
                          (format ":%s: %s" (car prop) (cdr prop)))
                        properties "\n")
-            ":END:\n")))
+            "\n:END:\n")))
 
 (defun asana-org-render--format-comments (comments)
   "Format COMMENTS list as Org drawer."
