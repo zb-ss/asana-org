@@ -24,10 +24,15 @@ class AuthConfig(BaseSettings):
     )
 
     # Auth source compatible placeholder - can be extended to support
-    # keyring, 1password CLI, or other secure storage backends
+    # keyring, 1password CLI, pass, or other secure storage backends
     auth_source: str = Field(
         default="env",
-        description="Auth source: env, keyring, or 1password",
+        description="Auth source: env, keyring, 1password, or pass",
+    )
+
+    pass_path: str | None = Field(
+        default=None,
+        description="Path in the pass store for the PAT (e.g. 'asana/pat')",
     )
 
 
@@ -134,6 +139,37 @@ class LoggingConfig(BaseSettings):
     )
 
 
+class AIConfig(BaseSettings):
+    """AI integration configuration."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="ASANA_ORG_AI_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable AI-powered features",
+    )
+
+    model: str = Field(
+        default="gemini-3-flash-preview",
+        description="AI model identifier",
+    )
+
+    api_key_pass_path: str = Field(
+        default="api.gemini.ai/z-first-key",
+        description="Path in the pass store for the AI API key",
+    )
+
+    api_key: str | None = Field(
+        default=None,
+        description="Direct AI API key (overrides pass lookup)",
+    )
+
+
 class Settings(BaseSettings):
     """Main application settings composing all config sections."""
 
@@ -147,6 +183,7 @@ class Settings(BaseSettings):
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     sync: SyncConfig = Field(default_factory=SyncConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    ai: AIConfig = Field(default_factory=AIConfig)
 
 
 # Global settings instance
