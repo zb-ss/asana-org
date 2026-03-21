@@ -25,6 +25,7 @@
 (declare-function asana-org-comment-append "asana-org")
 (declare-function asana-org-get-property "asana-org")
 (declare-function asana-org-sync-status "asana-org-sync")
+(declare-function asana-org-sync--section-name-for-gid "asana-org-sync")
 
 ;; Variables/constants from asana-org.el
 (defvar asana-org-prop-gid)
@@ -65,7 +66,18 @@
           (project (read-string "Target project GID: "))
           (section (read-string "Target section GID (optional): ")))
      (list task project (unless (string= section "") section))))
-  (asana-org-move-task task-gid project-gid section-gid))
+  (let ((response (asana-org-move-task task-gid project-gid section-gid)))
+    ;; Show a user-friendly message including section name when available
+    (let* ((refile-gid (or section-gid project-gid))
+           (section-name (when refile-gid
+                           (require 'asana-org-sync)
+                           (condition-case nil
+                               (asana-org-sync--section-name-for-gid refile-gid)
+                             (error nil)))))
+      (if section-name
+          (message "Task moved and refiled to section '%s'" section-name)
+        (message "Task moved to project %s" project-gid)))
+    response))
 
 (transient-define-suffix asana-org-transient-comment (task-gid comment)
   "Append comment to task."
