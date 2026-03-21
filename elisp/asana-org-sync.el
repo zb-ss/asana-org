@@ -50,6 +50,7 @@
     ("sync-apply" . "Apply mutations to Asana")
     ("move-task" . "Move task to project/section")
     ("comment-append" . "Append comment to task")
+    ("relink" . "Relink task to new permalink URL")
     ("cache-prune" . "Prune old cache entries")
     ("status" . "Show sync health status"))
   "Alist of available bridge commands and descriptions.
@@ -348,6 +349,26 @@ Raises `asana-org-sync-failed' on bridge error or complete failure."
           (when (called-interactively-p 'any)
             (message "Comment added to task")))
       (signal 'asana-org-sync-failed (list "Comment failed" result)))
+    response))
+
+(defun asana-org-sync-relink (task-gid new-permalink)
+  "Relink TASK-GID to NEW-PERMALINK URL.
+Updates the stored permalink for a task snapshot in the bridge database."
+  (interactive
+   (list (read-string "Task GID: ")
+         (read-string "New permalink URL: ")))
+  (asana-org-log-info "Sync relink: task=%s permalink=%s" task-gid new-permalink)
+  (let* ((args (list "relink" task-gid "--permalink" new-permalink "--json"))
+         (response (apply #'asana-org-call-json args))
+         (data (asana-org-sync--parse-response response))
+         (old-permalink (alist-get 'old_permalink data))
+         (task-name (alist-get 'task_name data)))
+    (asana-org-log-info "Relinked task %s (%s)" task-gid (or task-name "unknown"))
+    (when (called-interactively-p 'any)
+      (message "Relinked task %s: %s -> %s"
+               task-gid
+               (or old-permalink "(none)")
+               new-permalink))
     response))
 
 (defun asana-org-sync-ai-summary (task-gids &optional include-notes)

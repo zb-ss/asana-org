@@ -142,6 +142,8 @@ def doctor() -> None:
     console.print("\n[bold]Asana Org Bridge - Diagnostics[/bold]\n")
 
     all_ok = True
+    has_db = False
+    has_pat = False
 
     # Check Python version
     console.print("[cyan]Python:[/cyan]")
@@ -175,6 +177,7 @@ def doctor() -> None:
         db = get_database()
         schema_version = db.get_schema_version()
         if schema_version:
+            has_db = True
             console.print(f"  Schema version: {schema_version}")
             console.print("  ✓ Database initialized")
         else:
@@ -190,6 +193,7 @@ def doctor() -> None:
         auth = get_auth_manager()
         pat = auth.get_pat()
         if pat:
+            has_pat = True
             console.print("  ✓ PAT loaded (secret)")
         else:
             console.print("  ⚠ No PAT configured (set ASANA_PAT env var)")
@@ -209,6 +213,35 @@ def doctor() -> None:
             console.print(f"  ✓ Data directory will be created: {db_dir}")
     except Exception as e:
         console.print(f"  ✗ Directory check error: {e}")
+
+    # First-run and partial setup guidance
+    if not has_db and not has_pat:
+        # Full first-run: neither DB nor PAT
+        console.print("\n[bold cyan]🚀 First-time Setup Guide[/bold cyan]\n")
+        console.print("  1. Set your Asana PAT:")
+        console.print('     [green]export ASANA_PAT="your_personal_access_token"[/green]')
+        console.print("     (Get one at: https://app.asana.com/0/developer-console)\n")
+        console.print("  2. Initialize the database:")
+        console.print("     [green]asana-org-bridge db-init[/green]\n")
+        console.print("  3. Pull your tasks:")
+        console.print("     [green]asana-org-bridge sync-pull --json --incomplete-only[/green]\n")
+        console.print("  4. In Emacs, run: [green]M-x asana-org-sync-pull[/green]")
+    elif has_db and not has_pat:
+        # Partial: DB exists but no PAT
+        console.print("\n[bold yellow]⚠ Partial Setup: Missing PAT[/bold yellow]\n")
+        console.print("  Database is initialized, but no Asana PAT is configured.")
+        console.print("  Set your PAT to connect to Asana:\n")
+        console.print('     [green]export ASANA_PAT="your_personal_access_token"[/green]')
+        console.print("     (Get one at: https://app.asana.com/0/developer-console)\n")
+        console.print("  Without a PAT, sync commands will use mock data mode.")
+    elif not has_db and has_pat:
+        # Partial: PAT exists but no DB
+        console.print("\n[bold yellow]⚠ Partial Setup: Database Not Initialized[/bold yellow]\n")
+        console.print("  PAT is configured, but the database has not been initialized.")
+        console.print("  Run the following to set up the database:\n")
+        console.print("     [green]asana-org-bridge db-init[/green]\n")
+        console.print("  Then pull your tasks:")
+        console.print("     [green]asana-org-bridge sync-pull --json --incomplete-only[/green]")
 
     # Summary
     console.print("\n[bold]Summary:[/bold]")
@@ -970,6 +1003,69 @@ def detect_changes(
         )
         print(json.dumps(error_envelope, indent=2))
         logger.error("detect_changes_failed", error=str(e))
+        raise typer.Exit(code=1) from None
+
+
+@app.command()
+def relink(
+    task_gid: str = typer.Argument(..., help="Task GID to relink"),
+    permalink: str = typer.Option(
+        ..., "--permalink", help="New permalink URL for the task"
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", "-j", help="Output JSON envelope"
+    ),
+) -> None:
+    """Relink a task to a new Asana permalink URL.
+
+    Updates the stored permalink_url for a task snapshot, useful when
+    a task has been moved and its permalink has changed.
+    """
+    try:
+        engine = get_sync_engine()
+        result = engine.relink_task(task_gid=task_gid, new_permalink=permalink)
+
+        if json_output:
+            if "error" in result:
+                # Engine returned an error dict
+                error_envelope = build_error_envelope(
+                    command="relink",
+                    code=result.get("code", "INTERNAL_ERROR"),
+                    message=result.get("error", "Unknown error"),
+                )
+                print(json.dumps(error_envelope, indent=2))
+                raise typer.Exit(code=1)
+
+            response = {
+                "version": "1",
+                "command": "relink",
+                "status": "success",
+                "data": result,
+            }
+            print(json.dumps(response, indent=2))
+        else:
+            if "error" in result:
+                console.print(f"[red]Error: {result['error']}[/red]")
+                raise typer.Exit(code=1)
+
+            console.print(f"[bold]Relinked task {task_gid}[/bold]")
+            console.print(f"  Old permalink: {result.get('old_permalink', '(none)')}")
+            console.print(f"  New permalink: {result.get('new_permalink')}")
+            console.print("\n✓ Task relinked successfully")
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        if json_output:
+            error_envelope = build_error_envelope(
+                command="relink",
+                code="INTERNAL_ERROR",
+                message=str(e),
+            )
+            print(json.dumps(error_envelope, indent=2))
+        else:
+            console.print(f"[red]Error relinking task: {e}[/red]")
+        logger.error("relink_failed", error=str(e))
         raise typer.Exit(code=1) from None
 
 

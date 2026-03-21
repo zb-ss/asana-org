@@ -440,7 +440,9 @@ By default pulls only incomplete tasks."
   (asana-org-log-info "Starting pull sync (project: %s)" (or project-gid "all"))
   (asana-org-ensure-root-directory)
 
-  (let* ((args (list "sync-pull" "--json" "--incomplete-only")))
+  ;; Check for first pull: no .org files in root directory yet
+  (let* ((is-first-pull (null (directory-files asana-org-root-directory nil "\\.org$")))
+         (args (list "sync-pull" "--json" "--incomplete-only")))
     (when project-gid
       (setq args (append args (list "--project" project-gid))))
     (let* ((response (apply #'asana-org-call-json args))
@@ -456,6 +458,10 @@ By default pulls only incomplete tasks."
                         (asana-org-render-tasks-with-sections tasks sections)
                       (asana-org-render-tasks tasks))))
           (message "Asana Org: Pulled %d tasks into %d file(s)" pulled-count (length files))
+          ;; First-pull welcome message
+          (when is-first-pull
+            (message "First pull complete! Your tasks are in %s. Use C-c a to access the Asana menu."
+                     asana-org-root-directory))
           ;; Open the first generated org file
           (when (and files (car files))
             (find-file (car files)))))
