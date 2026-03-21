@@ -150,18 +150,23 @@ Detailed documentation is available in the `docs/` directory:
 ### CLI
 -   `doctor`: Run diagnostics.
 -   `db-init`: Initialize local database.
--   `sync-pull`: Fetch tasks from Asana.
+-   `sync-pull`: Fetch tasks from Asana (`--include-comments` for stories).
 -   `sync-preview`: Preview local changes.
--   `sync-apply`: Push changes to Asana.
--   `move-task`: Move task to another project/section.
+-   `sync-apply`: Push changes to Asana (with conflict detection).
+-   `detect-changes`: Detect org file changes against cached snapshots.
+-   `move-task`: Move task to another project/section (with section validation).
 -   `comment-append`: Add a comment to a task.
+-   `cache-prune`: Prune old cache entries per retention policy.
+-   `status`: Show sync health diagnostics.
 
 ### Emacs (via `C-c a`)
 -   `p`: **Pull** (`asana-org-sync-pull`)
+-   `d`: **Detect changes** (`asana-org-sync-detect-changes`)
 -   `v`: **Preview** (`asana-org-sync-preview`)
 -   `a`: **Apply** (`asana-org-sync-apply`)
--   `m`: **Move** (`asana-org-move-task`)
+-   `m`: **Move** (`asana-org-move-task`) — auto-refiles heading after success
 -   `c`: **Comment** (`asana-org-comment-append`)
+-   `s`: **Status** (`asana-org-sync-status`)
 
 ## Release & Distribution
 
