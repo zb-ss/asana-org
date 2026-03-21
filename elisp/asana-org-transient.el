@@ -23,6 +23,7 @@
 (declare-function asana-org-sync-apply "asana-org")
 (declare-function asana-org-move-task "asana-org")
 (declare-function asana-org-comment-append "asana-org")
+(declare-function asana-org-ai-summary "asana-org")
 (declare-function asana-org-get-property "asana-org")
 (declare-function asana-org-sync-status "asana-org-sync")
 (declare-function asana-org-sync--section-name-for-gid "asana-org-sync")
@@ -98,6 +99,15 @@
      (list task (read-string "Comment: "))))
   (asana-org-comment-append task-gid comment))
 
+(transient-define-suffix asana-org-transient-ai-summary ()
+  "Generate AI summary for task at point."
+  :key "i"
+  (interactive)
+  (let ((task-gid (asana-org-get-property asana-org-prop-gid)))
+    (unless task-gid
+      (user-error "No ASANA_GID property found at point"))
+    (asana-org-ai-summary (list task-gid))))
+
 (transient-define-suffix asana-org-transient-status ()
   "Show sync health status."
   :key "s"
@@ -149,7 +159,8 @@
     ("a" "Apply changes" asana-org-transient-apply)]
    ["Actions"
      ("m" "Move task" asana-org-transient-move)
-     ("c" "Add comment" asana-org-transient-comment)]
+     ("c" "Add comment" asana-org-transient-comment)
+     ("i" "AI Summary" asana-org-transient-ai-summary)]
    ["Utility"
     ("s" "Status" asana-org-transient-status)
     ("r" "Reconcile" asana-org-transient-reconcile)

@@ -113,6 +113,32 @@ class SyncConfig(BaseSettings):
     )
 
 
+class AIConfig(BaseSettings):
+    """AI integration configuration."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="ASANA_ORG_AI_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    api_key: str | None = Field(
+        default=None,
+        description="Gemini API key (direct env var ASANA_ORG_AI_API_KEY)",
+    )
+
+    api_key_pass_path: str = Field(
+        default="api.gemini.ai/z-first-key",
+        description="Path in pass store for Gemini API key",
+    )
+
+    model: str = Field(
+        default="gemini-3-flash-preview",
+        description="Gemini model to use for summaries",
+    )
+
+
 class LoggingConfig(BaseSettings):
     """Logging configuration."""
 
@@ -182,6 +208,7 @@ class Settings(BaseSettings):
     auth: AuthConfig = Field(default_factory=AuthConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     sync: SyncConfig = Field(default_factory=SyncConfig)
+    ai: AIConfig = Field(default_factory=AIConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     ai: AIConfig = Field(default_factory=AIConfig)
 

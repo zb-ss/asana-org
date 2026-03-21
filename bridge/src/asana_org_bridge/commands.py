@@ -967,6 +967,68 @@ def status(
         raise typer.Exit(code=1) from None
 
 
+@app.command("ai-summary")
+def ai_summary(
+    task_gids: list[str] = typer.Argument(..., help="One or more task GIDs to summarize"),
+    include_notes: bool = typer.Option(
+        True,
+        "--include-notes/--no-include-notes",
+        help="Include task notes in the AI prompt",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        "-j",
+        help="Output JSON envelope",
+    ),
+) -> None:
+    """Generate an AI summary for one or more tasks.
+
+    Uses the Gemini API to produce a concise summary of task status,
+    priorities, and action items.  In mock mode, returns a deterministic
+    summary without calling the API.
+    """
+    try:
+        engine = get_sync_engine()
+        result = engine.ai_summary(
+            task_gids=task_gids,
+            include_notes=include_notes,
+        )
+
+        if json_output:
+            response = {
+                "version": "1",
+                "command": "ai-summary",
+                "status": "success",
+                "data": {
+                    "summary": result["summary"],
+                    "task_count": result["task_count"],
+                    "model": result["model"],
+                },
+            }
+            print(json.dumps(response, indent=2))
+            return
+
+        # Rich console output
+        console.print("\n[bold]AI Task Summary[/bold]\n")
+        console.print(f"Tasks analyzed: {result['task_count']}")
+        console.print(f"Model: {result['model']}")
+        console.print(f"\n{result['summary']}\n")
+
+    except Exception as e:
+        if json_output:
+            error_envelope = build_error_envelope(
+                command="ai-summary",
+                code="INTERNAL_ERROR",
+                message=str(e),
+            )
+            print(json.dumps(error_envelope, indent=2))
+        else:
+            console.print(f"[red]Error generating AI summary: {e}[/red]")
+        logger.error("ai_summary_failed", error=str(e))
+        raise typer.Exit(code=1) from None
+
+
 @app.command("detect-changes")
 def detect_changes(
     json_input: str | None = typer.Option(
