@@ -4,19 +4,67 @@
 
 | Command | Purpose |
 |---------|---------|
+| `sync-pull` | Pull tasks from Asana with section ordering; returns tasks + sections JSON |
 | `sync-preview` | Fetch pending changes, return diff-ready JSON for Emacs to display |
 | `sync-apply` | Execute batch of mutations with idempotency; returns results/errors per mutation |
 | `move-task` | Move a task to a different list/section |
 | `comment-append` | Add a comment to a task |
 
-**Note**: Commands use hyphenated naming (e.g., `sync-preview`, `sync-apply`).
+**Note**: Commands use hyphenated naming (e.g., `sync-pull`, `sync-preview`, `sync-apply`).
 
 `sync-apply` accepts JSON over stdin/stdout (`--json -`).
 `move-task` and `comment-append` use CLI arguments for input, with optional JSON output (`--json`).
 
 ---
 
-## 2. sync-preview Output Schema
+## 2. sync-pull Output Schema
+
+### Schema
+
+```json
+{
+  "version": "1",
+  "command": "sync-pull",
+  "status": "success",
+  "data": {
+    "tasks": [
+      {
+        "gid": "string",
+        "name": "string",
+        "completed": false,
+        "permalink_url": "string",
+        "modified_at": "ISO datetime",
+        "due_on": "YYYY-MM-DD | null",
+        "due_at": "ISO datetime | null",
+        "start_on": "YYYY-MM-DD | null",
+        "notes": "string | null",
+        "memberships": [
+          {
+            "project": { "gid": "string", "name": "string" },
+            "section": { "gid": "string", "name": "string" } | null
+          }
+        ]
+      }
+    ],
+    "sections": {
+      "<project_gid>": [
+        { "gid": "string", "name": "string" }
+      ]
+    },
+    "summary": {
+      "pulled": 0,
+      "updated": 0
+    },
+    "errors": []
+  }
+}
+```
+
+The `sections` map provides ordered section lists per project, matching the display order in Asana. Emacs uses this to render section headings (level 1) with tasks nested under them (level 2).
+
+---
+
+## 3. sync-preview Output Schema
 
 ### Schema
 
@@ -117,7 +165,7 @@
 
 ---
 
-## 3. sync-apply Request/Response
+## 4. sync-apply Request/Response
 
 ### Request Schema
 
@@ -227,7 +275,7 @@
 
 ---
 
-## 4. move-task Input/Response
+## 5. move-task Input/Response
 
 ### CLI Input
 
@@ -255,7 +303,7 @@ asana-org-bridge move-task 1234567890 --from "Backlog" --to "In Progress" --idem
 
 ---
 
-## 5. comment-append Input/Response
+## 6. comment-append Input/Response
 
 ### CLI Input
 
@@ -283,7 +331,7 @@ asana-org-bridge comment-append 1234567890 --body "This is a comment appended fr
 
 ---
 
-## 6. Standard Error Envelope
+## 7. Standard Error Envelope
 
 All error responses follow this schema:
 
@@ -332,7 +380,7 @@ All error responses follow this schema:
 
 ---
 
-## 7. Conflict Blocking Requirements
+## 8. Conflict Blocking Requirements
 
 For a mutation to be considered **blocking** (requiring user intervention):
 

@@ -36,6 +36,9 @@ class PullResult:
     tasks: list[dict[str, Any]] = field(
         default_factory=list
     )  # Full task array for Elisp
+    sections: dict[str, list[dict[str, Any]]] = field(
+        default_factory=dict
+    )  # project_gid -> ordered section list
 
 
 @dataclass
@@ -149,6 +152,17 @@ class MockDataGenerator:
             ],
         },
     ]
+
+    @classmethod
+    def generate_sections_by_project(cls) -> dict[str, list[dict[str, Any]]]:
+        """Generate deterministic mock sections grouped by project."""
+        by_project: dict[str, list[dict[str, Any]]] = {}
+        for section in cls.MOCK_SECTIONS:
+            pgid = section["project_gid"]
+            if pgid not in by_project:
+                by_project[pgid] = []
+            by_project[pgid].append({"gid": section["gid"], "name": section["name"]})
+        return by_project
 
     @classmethod
     def generate_tasks(cls) -> list[dict[str, Any]]:
@@ -315,6 +329,29 @@ class SyncEngine:
 
                 # Store full tasks array for Elisp consumption
                 result.tasks = tasks[:limit] if limit else tasks
+
+                # Fetch ordered sections for each project
+                if self.use_mock:
+                    result.sections = MockDataGenerator.generate_sections_by_project()
+                else:
+                    client = self.asana_client
+                    if client:
+                        project_gids: set[str] = set()
+                        for task_data in result.tasks:
+                            for mem in task_data.get("memberships", []):
+                                proj = mem.get("project")
+                                if isinstance(proj, dict) and proj.get("gid"):
+                                    project_gids.add(proj["gid"])
+                        for pgid in project_gids:
+                            try:
+                                sections = client.get_sections(pgid)
+                                result.sections[pgid] = sections
+                            except Exception as e:
+                                logger.warning(
+                                    "section_fetch_failed",
+                                    project_gid=pgid,
+                                    error=str(e),
+                                )
 
                 # Update sync run
                 run.status = "completed"
