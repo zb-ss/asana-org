@@ -36,6 +36,7 @@
 
 ;; Forward declarations for cross-module functions
 (declare-function asana-org-render-refile-task "asana-org-render")
+(declare-function asana-org-render-ai-summary "asana-org-render")
 
 ;;;; Custom Variables
 
@@ -642,11 +643,13 @@ Uses bridge \\='comment-append\\=' command per cli-contract.md."
 
 ;;;###autoload
 (defun asana-org-ai-summary (&optional task-gids)
-  "Get AI summary for TASK-GIDS (or current task if none specified).
-Uses Asana MCP for summaries."
+  "Generate AI summary for tasks at point or given TASK-GIDS."
   (interactive)
-  (ignore task-gids)
-  (user-error "Command 'ai-summary' is not supported by the bridge CLI"))
+  (let* ((gids (or task-gids
+                   (list (asana-org-get-property asana-org-prop-gid))))
+         (args (append (list "ai-summary") gids (list "--json")))
+         (response (apply #'asana-org-call-json args)))
+    (asana-org-render-ai-summary (cdr (assq 'data response)))))
 
 ;;;; Rendering Helpers
 ;; Real implementations live in asana-org-render.el, loaded via

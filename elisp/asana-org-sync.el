@@ -31,13 +31,18 @@
 (declare-function asana-org-get-bridge-path "asana-org")
 (declare-function asana-org-generate-idempotency-key "asana-org")
 (declare-function asana-org-render-preview "asana-org-render")
+(declare-function asana-org-render-ai-summary "asana-org-render")
 (declare-function asana-org-render--find-section-heading "asana-org-render")
+
+;; Functions from asana-org.el (additional)
+(declare-function asana-org-get-property "asana-org")
 
 ;; Variables/constants from asana-org.el
 (defvar asana-org-bridge-binary)
 (defvar asana-org-root-directory)
 (defvar asana-org-batch-size)
 (defvar asana-org-preview-buffer-name)
+(defvar asana-org-prop-gid)
 (defvar asana-org-confirm-threshold)
 (defvar asana-org-prop-section-gid)
 
@@ -373,11 +378,21 @@ Updates the stored permalink for a task snapshot in the bridge database."
     response))
 
 (defun asana-org-sync-ai-summary (task-gids &optional include-notes)
-  "Get AI summary for TASK-GIDS.
-INCLUDE-NOTES includes task notes in the summary."
-  (interactive)
-  (ignore task-gids include-notes)
-  (user-error "Command 'ai-summary' is not supported by the bridge CLI"))
+  "Get AI summary for TASK-GIDS via the bridge CLI.
+When INCLUDE-NOTES is non-nil (default t), task notes are sent to the AI."
+  (interactive
+   (list (list (asana-org-get-property asana-org-prop-gid)) t))
+  (asana-org-log-info "AI summary: %d tasks, include-notes=%s"
+                      (length task-gids)
+                      (if include-notes "yes" "no"))
+  (let* ((args (append (list "ai-summary")
+                       task-gids
+                       (list "--json")
+                       (unless include-notes (list "--no-include-notes"))))
+         (response (apply #'asana-org-call-json args))
+         (data (cdr (assq 'data response))))
+    (asana-org-render-ai-summary data)
+    response))
 
 (defun asana-org-sync-cache-prune (&optional dry-run report)
   "Prune old cache entries via the bridge CLI.
