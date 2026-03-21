@@ -29,3 +29,6 @@ elisp/*.elc
 plans/
 /bridge/src/asana_org_bridge/__pycache__/
 /bridge/tests/__pycache__/
+
+# Projectile marker file
+.projectile
