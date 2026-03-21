@@ -782,5 +782,81 @@ def cache_prune(
         raise typer.Exit(code=1) from None
 
 
+@app.command()
+def status(
+    json_output: bool = typer.Option(
+        False, "--json", "-j", help="Output JSON envelope"
+    ),
+) -> None:
+    """Show sync health status and diagnostics.
+
+    Reports last pull/apply timestamps, snapshot counts, pending/failed
+    mutations, and database metadata.
+    """
+    try:
+        engine = get_sync_engine()
+        sync_status = engine.get_status()
+
+        if json_output:
+            response = {
+                "version": "1",
+                "command": "status",
+                "status": "success",
+                "data": {
+                    "sync_status": sync_status,
+                },
+            }
+            print(json.dumps(response, indent=2))
+            return
+
+        # Rich console output
+        console.print("\n[bold]Asana Org Bridge - Sync Status[/bold]\n")
+
+        table = Table(title="Sync Health")
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="white")
+
+        table.add_row("Last Pull", sync_status["last_pull_at"] or "(never)")
+        table.add_row("Last Apply", sync_status["last_apply_at"] or "(never)")
+        table.add_row("Snapshots", str(sync_status["snapshot_count"]))
+        table.add_row("Unique Tasks", str(sync_status["unique_tasks"]))
+        table.add_row("Pending Mutations", str(sync_status["pending_mutations"]))
+        table.add_row("Failed Mutations", str(sync_status["failed_mutations"]))
+        table.add_row("Total Sync Runs", str(sync_status["total_sync_runs"]))
+        table.add_row(
+            "Schema Version", sync_status["schema_version"] or "(not initialized)"
+        )
+
+        db_size = sync_status["db_size_bytes"]
+        if db_size is not None:
+            if db_size >= 1024 * 1024:
+                size_str = f"{db_size / (1024 * 1024):.1f} MB"
+            elif db_size >= 1024:
+                size_str = f"{db_size / 1024:.1f} KB"
+            else:
+                size_str = f"{db_size} B"
+            table.add_row("DB Size", size_str)
+        else:
+            table.add_row("DB Size", "(file not found)")
+
+        table.add_row("DB Path", sync_status["db_path"])
+
+        console.print(table)
+        console.print()
+
+    except Exception as e:
+        if json_output:
+            error_envelope = build_error_envelope(
+                command="status",
+                code="INTERNAL_ERROR",
+                message=str(e),
+            )
+            print(json.dumps(error_envelope, indent=2))
+        else:
+            console.print(f"[red]Error getting status: {e}[/red]")
+        logger.error("status_failed", error=str(e))
+        raise typer.Exit(code=1) from None
+
+
 if __name__ == "__main__":
     app()

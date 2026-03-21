@@ -45,9 +45,10 @@
     ("sync-apply" . "Apply mutations to Asana")
     ("move-task" . "Move task to project/section")
     ("comment-append" . "Append comment to task")
-    ("cache-prune" . "Prune old cache entries"))
+    ("cache-prune" . "Prune old cache entries")
+    ("status" . "Show sync health status"))
   "Alist of available bridge commands and descriptions.
-Note: ai-summary, reconcile, rebuild-cache, validate, and status are not supported
+Note: ai-summary, reconcile, rebuild-cache, and validate are not supported
 by the current bridge CLI contract and have been removed.")
 
 ;;;; JSON Envelope Parsing
@@ -459,11 +460,36 @@ Uses stdin input mode with proper JSON envelope per docs/cli-contract.md."
 ;;;; Status Reporting
 
 (defun asana-org-sync-status ()
-  "Get sync status from bridge.
-WARNING: This command is NOT supported by the current bridge CLI contract.
-It will signal an error if called."
+  "Get sync status from bridge and display in log buffer."
   (interactive)
-  (user-error "Command 'status' is not supported by the bridge CLI"))
+  (asana-org-log-info "Fetching sync status...")
+  (let* ((response (asana-org-call-json "status" "--json"))
+         (data (asana-org-sync--parse-response response))
+         (sync-status (alist-get 'sync_status data))
+         (last-pull (or (alist-get 'last_pull_at sync-status) "(never)"))
+         (last-apply (or (alist-get 'last_apply_at sync-status) "(never)"))
+         (snapshots (or (alist-get 'snapshot_count sync-status) 0))
+         (unique (or (alist-get 'unique_tasks sync-status) 0))
+         (pending (or (alist-get 'pending_mutations sync-status) 0))
+         (failed (or (alist-get 'failed_mutations sync-status) 0))
+         (db-size (alist-get 'db_size_bytes sync-status))
+         (db-size-str (cond
+                       ((null db-size) "unknown")
+                       ((>= db-size (* 1024 1024))
+                        (format "%.1f MB" (/ (float db-size) (* 1024 1024))))
+                       ((>= db-size 1024)
+                        (format "%.1f KB" (/ (float db-size) 1024)))
+                       (t (format "%d B" db-size)))))
+    (asana-org-log-info "--- Sync Status ---")
+    (asana-org-log-info "Last pull:    %s" last-pull)
+    (asana-org-log-info "Last apply:   %s" last-apply)
+    (asana-org-log-info "Snapshots:    %d (%d unique tasks)" snapshots unique)
+    (asana-org-log-info "Pending:      %d  Failed: %d" pending failed)
+    (asana-org-log-info "DB size:      %s" db-size-str)
+    (when (called-interactively-p 'any)
+      (message "Sync status: %d snapshots, %d pending, %d failed — last pull %s"
+               snapshots pending failed last-pull))
+    response))
 
 ;;;; Clear Pending Changes
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -2319,6 +2320,96 @@ class SyncEngine:
                     error=str(e),
                 )
                 task_data["stories"] = []
+
+    def get_status(self) -> dict[str, Any]:
+        """Query sync health information from the database.
+
+        Returns:
+            Dictionary with sync status metrics including last pull/apply
+            timestamps, snapshot counts, mutation counts, and DB metadata.
+        """
+        db_path = str(self.db.db_path)
+        db_size_bytes: int | None = None
+        try:
+            db_size_bytes = os.path.getsize(self.db.db_path)
+        except OSError:
+            db_size_bytes = None
+
+        schema_version = self.db.get_schema_version()
+
+        # If DB is not initialized, return zeros/nulls
+        if schema_version is None:
+            return {
+                "last_pull_at": None,
+                "last_apply_at": None,
+                "snapshot_count": 0,
+                "unique_tasks": 0,
+                "pending_mutations": 0,
+                "failed_mutations": 0,
+                "total_sync_runs": 0,
+                "schema_version": None,
+                "db_size_bytes": db_size_bytes,
+                "db_path": db_path,
+            }
+
+        with self.db.session() as session:
+            # Last completed pull
+            last_pull_run = (
+                session.query(SyncRun)
+                .filter(SyncRun.run_type == "pull", SyncRun.status == "completed")
+                .order_by(SyncRun.completed_at.desc())
+                .first()
+            )
+            last_pull_at = (
+                last_pull_run.completed_at.isoformat() if last_pull_run else None
+            )
+
+            # Last completed apply
+            last_apply_run = (
+                session.query(SyncRun)
+                .filter(SyncRun.run_type == "apply", SyncRun.status == "completed")
+                .order_by(SyncRun.completed_at.desc())
+                .first()
+            )
+            last_apply_at = (
+                last_apply_run.completed_at.isoformat() if last_apply_run else None
+            )
+
+            # Snapshot counts
+            snapshot_count = session.query(TaskSnapshot).count()
+
+            unique_tasks_result = session.query(
+                func.count(func.distinct(TaskSnapshot.gid))
+            ).scalar()
+            unique_tasks = unique_tasks_result or 0
+
+            # Mutation counts
+            pending_mutations = (
+                session.query(PendingMutation)
+                .filter(PendingMutation.status == "pending")
+                .count()
+            )
+            failed_mutations = (
+                session.query(PendingMutation)
+                .filter(PendingMutation.status == "failed")
+                .count()
+            )
+
+            # Total sync runs
+            total_sync_runs = session.query(SyncRun).count()
+
+        return {
+            "last_pull_at": last_pull_at,
+            "last_apply_at": last_apply_at,
+            "snapshot_count": snapshot_count,
+            "unique_tasks": unique_tasks,
+            "pending_mutations": pending_mutations,
+            "failed_mutations": failed_mutations,
+            "total_sync_runs": total_sync_runs,
+            "schema_version": schema_version,
+            "db_size_bytes": db_size_bytes,
+            "db_path": db_path,
+        }
 
     def _upsert_task_snapshot(
         self,
