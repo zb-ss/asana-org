@@ -95,6 +95,12 @@ class SyncConfig(BaseSettings):
         description="Asana workspace GID (required for pulling My Tasks)",
     )
 
+    # Safety cap on write operations per invocation
+    max_writes: int = Field(
+        default=60,
+        description="Maximum write operations per command invocation (0 = unlimited)",
+    )
+
     # Mock mode for testing
     mock_data: bool = Field(
         default=False,
