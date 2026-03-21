@@ -84,6 +84,33 @@ class DetectChangesResult:
     summary: dict[str, int] = field(default_factory=dict)
 
 
+@dataclass
+class ReconcileResult:
+    """Result of a reconcile operation."""
+
+    drifted_tasks: list[dict[str, Any]] = field(default_factory=list)
+    missing_remote: list[str] = field(default_factory=list)
+    summary: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
+class RebuildCacheResult:
+    """Result of a rebuild-cache operation."""
+
+    snapshots_deleted: int = 0
+    snapshots_created: int = 0
+
+
+@dataclass
+class ValidateResult:
+    """Result of a validate operation."""
+
+    mismatches: list[dict[str, Any]] = field(default_factory=list)
+    orphaned_org: list[str] = field(default_factory=list)
+    orphaned_db: list[str] = field(default_factory=list)
+    summary: dict[str, int] = field(default_factory=dict)
+
+
 class MockDataGenerator:
     """Generates deterministic mock data for testing."""
 
@@ -3070,3 +3097,236 @@ class SyncEngine:
             "proposed_state": proposed_state,
             "baseline_modified_at": baseline_modified_at,
         }
+
+    # --- Recovery commands ---
+
+    _RECONCILE_FIELDS = ("completed", "due_on", "start_on", "name")
+
+    def reconcile(self) -> ReconcileResult:
+        """Compare local snapshots against remote (or mock) task state.
+
+        For each unique task GID in the TaskSnapshot table, fetches the
+        current remote state and compares key fields. Reports any drift
+        between the cached snapshot and the remote.
+
+        Returns:
+            ReconcileResult with drifted tasks, missing remote list, and summary.
+        """
+        result = ReconcileResult()
+
+        with self.db.session() as session:
+            # Get all unique task GIDs from snapshots
+            unique_gids_rows = (
+                session.query(func.distinct(TaskSnapshot.gid)).all()
+            )
+            unique_gids = [row[0] for row in unique_gids_rows]
+
+            for gid in unique_gids:
+                # Get latest snapshot
+                snapshot = self._get_latest_snapshot(session, gid)
+                if snapshot is None:
+                    continue
+
+                # Fetch current remote state
+                remote = self._fetch_remote_task_for_reconcile(gid)
+                if remote is None:
+                    result.missing_remote.append(gid)
+                    continue
+
+                # Compare key fields
+                for field_name in self._RECONCILE_FIELDS:
+                    snapshot_value = getattr(snapshot, field_name, None)
+                    remote_value = remote.get(field_name)
+
+                    # Normalise booleans from remote JSON
+                    if field_name == "completed":
+                        snapshot_value = bool(snapshot_value)
+                        remote_value = bool(remote_value)
+
+                    if snapshot_value != remote_value:
+                        result.drifted_tasks.append({
+                            "gid": gid,
+                            "field": field_name,
+                            "snapshot_value": snapshot_value,
+                            "remote_value": remote_value,
+                        })
+
+        total_checked = len(unique_gids)
+        result.summary = {
+            "total_checked": total_checked,
+            "drifted": len(result.drifted_tasks),
+            "missing": len(result.missing_remote),
+        }
+
+        logger.info(
+            "reconcile_completed",
+            total_checked=total_checked,
+            drifted=len(result.drifted_tasks),
+            missing=len(result.missing_remote),
+        )
+
+        return result
+
+    def _fetch_remote_task_for_reconcile(
+        self, gid: str
+    ) -> dict[str, Any] | None:
+        """Fetch a single task's key fields from remote or mock data.
+
+        Args:
+            gid: Task GID to look up.
+
+        Returns:
+            Dict with completed, due_on, start_on, name keys, or None
+            if the task cannot be found.
+        """
+        if self.use_mock:
+            for mock_task in MockDataGenerator.MOCK_TASKS:
+                if mock_task["gid"] == gid:
+                    return {
+                        "completed": mock_task.get("completed", False),
+                        "due_on": mock_task.get("due_on"),
+                        "start_on": mock_task.get("start_on"),
+                        "name": mock_task.get("name", ""),
+                    }
+            return None
+
+        client = self.asana_client
+        if not client:
+            return None
+
+        try:
+            task = client.get_task(gid)
+            return {
+                "completed": task.completed,
+                "due_on": task.due_on,
+                "start_on": task.start_on,
+                "name": task.name,
+            }
+        except Exception as e:
+            logger.warning(
+                "reconcile_fetch_failed", gid=gid, error=str(e)
+            )
+            return None
+
+    def rebuild_cache(self) -> RebuildCacheResult:
+        """Delete all snapshots and re-populate from remote or mock data.
+
+        In mock mode the mock data set is re-inserted directly.
+        In live mode a forced pull is executed after clearing.
+
+        Returns:
+            RebuildCacheResult with deletion and creation counts.
+        """
+        result = RebuildCacheResult()
+
+        # Delete all existing snapshots
+        with self.db.session() as session:
+            result.snapshots_deleted = (
+                session.query(TaskSnapshot)
+                .delete(synchronize_session="fetch")
+            )
+
+        logger.info(
+            "rebuild_cache_cleared",
+            snapshots_deleted=result.snapshots_deleted,
+        )
+
+        if self.use_mock:
+            tasks = MockDataGenerator.generate_tasks()
+            with self.db.session() as session:
+                for task_data in tasks:
+                    self._upsert_task_snapshot(session, task_data)
+                    result.snapshots_created += 1
+        else:
+            pull_result = self.pull(force=True)
+            result.snapshots_created = pull_result.tasks_pulled
+
+        logger.info(
+            "rebuild_cache_completed",
+            snapshots_deleted=result.snapshots_deleted,
+            snapshots_created=result.snapshots_created,
+        )
+
+        return result
+
+    def validate(
+        self, org_task_states: list[dict[str, Any]]
+    ) -> ValidateResult:
+        """Validate org task states against latest snapshots.
+
+        Compares each entry in *org_task_states* against the most recent
+        TaskSnapshot. Also reports orphaned org tasks (no snapshot) and
+        orphaned DB snapshots (no org entry).
+
+        Args:
+            org_task_states: List of dicts with keys gid, completed,
+                due_on, start_on.
+
+        Returns:
+            ValidateResult with mismatches, orphaned lists, and summary.
+        """
+        result = ValidateResult()
+
+        org_gids: set[str] = set()
+
+        with self.db.session() as session:
+            for task_state in org_task_states:
+                gid = task_state.get("gid", "")
+                if not gid:
+                    continue
+                org_gids.add(gid)
+
+                snapshot = self._get_latest_snapshot(session, gid)
+                if snapshot is None:
+                    result.orphaned_org.append(gid)
+                    continue
+
+                # Compare fields
+                org_completed = bool(task_state.get("completed", False))
+                org_due_on = task_state.get("due_on") or None
+                org_start_on = task_state.get("start_on") or None
+
+                fields_compared = {
+                    "completed": (org_completed, bool(snapshot.completed)),
+                    "due_on": (org_due_on, snapshot.due_on or None),
+                    "start_on": (org_start_on, snapshot.start_on or None),
+                }
+
+                for field_name, (org_val, snap_val) in fields_compared.items():
+                    if org_val != snap_val:
+                        result.mismatches.append({
+                            "gid": gid,
+                            "field": field_name,
+                            "org_value": org_val,
+                            "snapshot_value": snap_val,
+                        })
+
+            # Find orphaned DB tasks (in DB but not in org)
+            db_gids_rows = (
+                session.query(func.distinct(TaskSnapshot.gid)).all()
+            )
+            db_gids = {row[0] for row in db_gids_rows}
+            result.orphaned_db = sorted(db_gids - org_gids)
+
+        total = len(org_gids)
+        mismatched_gids = {m["gid"] for m in result.mismatches}
+        valid = total - len(mismatched_gids) - len(result.orphaned_org)
+
+        result.summary = {
+            "total": total,
+            "valid": max(valid, 0),
+            "mismatched": len(mismatched_gids),
+            "orphaned_org": len(result.orphaned_org),
+            "orphaned_db": len(result.orphaned_db),
+        }
+
+        logger.info(
+            "validate_completed",
+            total=total,
+            valid=result.summary["valid"],
+            mismatched=result.summary["mismatched"],
+            orphaned_org=len(result.orphaned_org),
+            orphaned_db=len(result.orphaned_db),
+        )
+
+        return result
