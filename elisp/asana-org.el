@@ -30,6 +30,13 @@
 (require 'json)
 (require 'transient)
 
+;; Forward declarations for org functions used in property helpers
+(declare-function org-entry-get "org")
+(declare-function org-entry-put "org")
+
+;; Forward declarations for cross-module functions
+(declare-function asana-org-render-refile-task "asana-org-render")
+
 ;;;; Custom Variables
 
 (defgroup asana-org nil
@@ -359,8 +366,7 @@ Returns a user-friendly error message or nil if no error."
     ;; Status is returned as string from bridge JSON
     (when (string= status "error")
       (let ((code (alist-get 'code error-obj))
-            (message (alist-get 'message error-obj))
-            (details (alist-get 'details error-obj)))
+            (message (alist-get 'message error-obj)))
         (cond
          ((string= code "INVALID_REQUEST")
           (format "Invalid request: %s" message))
@@ -458,8 +464,8 @@ By default pulls only incomplete tasks."
 ;;;###autoload
 (defun asana-org-sync-preview ()
   "Compute and display outbound diff for current changes.
-This runs 'sync-preview' to get pending changes from the bridge.
-Changes are displayed in a preview buffer with:
+This runs \\='sync-preview\\=' to get pending changes from the
+bridge.  Changes are displayed in a preview buffer with:
 - Blocked conflicts (top, cannot apply)
 - Warnings
 - Proposed mutations grouped by type"
@@ -493,9 +499,9 @@ Changes are displayed in a preview buffer with:
 ;;;###autoload
 (defun asana-org-sync-apply ()
   "Apply approved changes to Asana.
-This runs 'sync-apply' to execute non-blocked mutations.
+This runs \\='sync-apply\\=' to execute non-blocked mutations.
 Requires preview to be run first to store pending changes.
-Skips blocked changes - resolve conflicts with pull first."
+Skips blocked changes -- resolve conflicts with pull first."
   (interactive)
   (require 'asana-org-sync)
   (asana-org-log-info "Starting apply")
@@ -539,7 +545,7 @@ Skips blocked changes - resolve conflicts with pull first."
   "Move TASK-GID to TARGET-PROJECT-GID.
 If TARGET-SECTION-GID is provided, move to that section.
 
-Uses bridge 'move-task' command per cli-contract.md.
+Uses bridge \\='move-task\\=' command per cli-contract.md.
 Requests task_gid, from_list, and to_list from user."
   (interactive
    (list (or (asana-org-get-property asana-org-prop-gid)
@@ -567,8 +573,24 @@ Requests task_gid, from_list, and to_list from user."
            (result (alist-get 'result data))
            (result-status (alist-get 'status result)))
       (if (string= result-status "applied")
-          (progn
+          (let ((refile-section (or target-section-gid target-project-gid)))
             (asana-org-log-info "Task moved successfully")
+            ;; Attempt to refile the task heading in the org buffer
+            (when refile-section
+              (require 'asana-org-render)
+              (condition-case err
+                  (let ((refiled (asana-org-render-refile-task task-gid refile-section)))
+                    (when refiled
+                      ;; Save the buffer containing the refiled task
+                      (let ((task-file (asana-org-get-task-file task-gid)))
+                        (when task-file
+                          (let ((buf (find-buffer-visiting task-file)))
+                            (when buf
+                              (with-current-buffer buf (save-buffer))))))
+                      (asana-org-log-info "Task refiled to section %s" refile-section)))
+                (error
+                 (asana-org-log-warn "Refile failed (move succeeded): %s"
+                                     (error-message-string err)))))
             (message "Task moved to project %s" target-project-gid))
         (asana-org-log-error "Move failed: %s" result)
         (signal 'asana-org-sync-failed (list "Move operation failed"))))
@@ -579,7 +601,7 @@ Requests task_gid, from_list, and to_list from user."
 (defun asana-org-comment-append (task-gid comment)
   "Append COMMENT to TASK-GID.
 
-Uses bridge 'comment-append' command per cli-contract.md."
+Uses bridge \\='comment-append\\=' command per cli-contract.md."
   (interactive
    (list (or (asana-org-get-property asana-org-prop-gid)
              (read-string "Task GID: "))

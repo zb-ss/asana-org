@@ -77,7 +77,6 @@ Returns nil if SEQ is nil or empty."
   "Convert Asana TASK data to Org heading text and properties.
 Returns (heading-text . properties-alist)."
   (let* ((gid (alist-get 'gid task))
-         (name (alist-get 'name task))
          (permalink (alist-get 'permalink_url task))
          (completed-raw (alist-get 'completed task))
          (completed (and completed-raw (not (eq completed-raw :json-false))))
@@ -106,8 +105,9 @@ Returns (heading-text . properties-alist)."
            (cons asana-org-prop-local-hash (asana-org-render--compute-hash task))))))
 
 (defun asana-org-render--normalize-json-booleans (obj)
-  "Convert :json-false to nil and :json-null to nil in OBJ recursively.
-Emacs `json-read' returns :json-false/:json-null but `json-serialize' rejects them."
+  "Normalize JSON booleans/nulls in OBJ recursively.
+Convert :json-false and :json-null to nil so that
+`json-serialize' can process the result."
   (cond
    ((eq obj :json-false) nil)
    ((eq obj :json-null) nil)
@@ -206,8 +206,8 @@ Creates or updates Org files in `asana-org-root-directory'."
          (updated-files nil))
     (pcase-dolist (`(,project-gid . ,project-tasks) by-project)
       (let* ((file (asana-org-get-project-file project-gid))
-             (existing-tasks (when (file-exists-p file)
-                               (asana-org-render--parse-existing-tasks file)))
+             (_existing-tasks (when (file-exists-p file)
+                                (asana-org-render--parse-existing-tasks file)))
              (rendered (mapconcat #'asana-org-render-task-entry project-tasks "\n"))
              (content (concat "#+TITLE: Asana Project " project-gid "\n"
                               "#+FILETAGS: :asana:\n\n"
@@ -339,8 +339,7 @@ Sections (in order):
 1. Blocked conflicts (top - cannot apply)
 2. Warnings
 3. Proposed mutations grouped by type (task_move, comment_add)"
-  (let* ((status (alist-get 'status preview-response))
-         (data (alist-get 'data preview-response))
+  (let* ((data (alist-get 'data preview-response))
          (pending-changes (or (alist-get 'pending_changes data) '()))
          (version (alist-get 'version preview-response))
          (command (alist-get 'command preview-response))
@@ -623,23 +622,115 @@ Response shape per cli-contract.md:
 
 ;;;; Utility Functions
 
-(defun asana-org-render-refile-task (task-gid target-file)
-  "Refile TASK-GID to TARGET-FILE."
-  (let* ((source-file (asana-org-get-task-file task-gid)))
-    (when source-file
-      (with-current-buffer (find-file source-file)
-        (goto-char (point-min))
-        (when (re-search-forward (concat ":ASANA_GID: " (regexp-quote task-gid)) nil t)
-          (org-cut-subtree))
-        (save-buffer)
-        (kill-buffer))
-      (with-current-buffer (find-file target-file)
-        (goto-char (point-max))
-        (yank)
-        (org-cut-subtree)
-        (save-buffer)
-        (kill-buffer))
-      (asana-org-log-info "Refiled task %s from %s to %s" task-gid source-file target-file))))
+(defun asana-org-render--find-task-heading (task-gid)
+  "Find heading with ASANA_GID property matching TASK-GID in current buffer.
+Return point at beginning of heading, or nil if not found."
+  (save-excursion
+    (goto-char (point-min))
+    (let ((found nil))
+      (while (and (not found)
+                  (re-search-forward
+                   (concat "^:" asana-org-prop-gid ": *"
+                           (regexp-quote task-gid) " *$")
+                   nil t))
+        ;; Move to the heading that owns this property
+        (org-back-to-heading t)
+        (setq found (point)))
+      found)))
+
+(defun asana-org-render--find-section-heading (section-gid)
+  "Find heading with ASANA_SECTION_GID property matching SECTION-GID.
+Searches level-1 headings in the current buffer.
+Return point at beginning of heading, or nil if not found."
+  (save-excursion
+    (goto-char (point-min))
+    (let ((found nil))
+      (while (and (not found)
+                  (re-search-forward "^\\* " nil t))
+        (let ((gid (org-entry-get (point) asana-org-prop-section-gid)))
+          (when (and gid (string= gid section-gid))
+            (org-back-to-heading t)
+            (setq found (point)))))
+      found)))
+
+(defun asana-org-render--section-end (section-pos)
+  "Return the end position of the section subtree at SECTION-POS.
+This is the point just before the next level-1 heading, or `point-max'."
+  (save-excursion
+    (goto-char section-pos)
+    (org-end-of-subtree t t)
+    (point)))
+
+(defun asana-org-render-refile-task (task-gid target-section-gid &optional target-file)
+  "Refile task TASK-GID to the section identified by TARGET-SECTION-GID.
+When TARGET-FILE is non-nil, refile into that file instead of the
+current buffer (for cross-file moves).
+
+The function:
+ 1. Locates the task heading by its ASANA_GID property.
+ 2. Locates the target section heading by its ASANA_SECTION_GID property.
+ 3. Cuts the task subtree and pastes it at the end of the target section.
+ 4. Updates the task ASANA_SECTION_GID property to TARGET-SECTION-GID.
+
+Returns non-nil on success, nil if the task or section was not found.
+If the task is already in the target section this is a no-op."
+  (let* ((source-file (or target-file (asana-org-get-task-file task-gid)))
+         (buf (when source-file (find-file-noselect source-file))))
+    (if (not buf)
+        (progn
+          (asana-org-log-warn "Refile: cannot find file for task %s" task-gid)
+          nil)
+      (with-current-buffer buf
+        (org-mode)
+        (save-excursion
+          (save-restriction
+            (widen)
+            (asana-org-render--refile-in-buffer
+             task-gid target-section-gid)))))))
+
+(defun asana-org-render--refile-in-buffer (task-gid target-section-gid)
+  "Perform the actual refile of TASK-GID to TARGET-SECTION-GID.
+Assumes the current buffer is widened and in `org-mode'.
+Returns non-nil on success, nil on failure."
+  (let ((task-pos (asana-org-render--find-task-heading task-gid)))
+    (cond
+     ((not task-pos)
+      (asana-org-log-warn "Refile: task %s not found in buffer" task-gid)
+      nil)
+     ;; Already in target section -- no-op
+     ((let ((cur (save-excursion
+                   (goto-char task-pos)
+                   (org-entry-get (point) asana-org-prop-section-gid))))
+        (and cur (string= cur target-section-gid)))
+      (asana-org-log-info
+       "Refile: task %s already in section %s, skipping"
+       task-gid target-section-gid)
+      t)
+     (t
+      (let ((section-pos (asana-org-render--find-section-heading
+                          target-section-gid)))
+        (if (not section-pos)
+            (progn
+              (asana-org-log-warn
+               "Refile: section %s not found in buffer"
+               target-section-gid)
+              nil)
+          ;; Cut task, paste at end of target section
+          (goto-char task-pos)
+          (org-cut-subtree)
+          ;; Recalculate section position after cut
+          (let ((new-pos (asana-org-render--find-section-heading
+                          target-section-gid)))
+            (goto-char (asana-org-render--section-end new-pos))
+            (unless (bolp) (insert "\n"))
+            (org-paste-subtree 2)
+            (org-back-to-heading t)
+            (org-entry-put (point) asana-org-prop-section-gid
+                           target-section-gid)
+            (asana-org-log-info "Refiled task %s to section %s"
+                                task-gid target-section-gid)
+            t)))))))
+
 
 (provide 'asana-org-render)
 

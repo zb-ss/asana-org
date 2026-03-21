@@ -17,6 +17,7 @@
 
 (require 'json)
 (require 'seq)
+(require 'org)
 
 ;; Forward declarations to avoid circular require
 ;; Functions from asana-org.el
@@ -29,6 +30,7 @@
 (declare-function asana-org-get-bridge-path "asana-org")
 (declare-function asana-org-generate-idempotency-key "asana-org")
 (declare-function asana-org-render-preview "asana-org-render")
+(declare-function asana-org-render--find-section-heading "asana-org-render")
 
 ;; Variables/constants from asana-org.el
 (defvar asana-org-bridge-binary)
@@ -36,6 +38,7 @@
 (defvar asana-org-batch-size)
 (defvar asana-org-preview-buffer-name)
 (defvar asana-org-confirm-threshold)
+(defvar asana-org-prop-section-gid)
 
 ;;;; Bridge Command Definitions
 
@@ -58,15 +61,13 @@ by the current bridge CLI contract and have been removed.")
 Returns the data payload or raises an error.
 Handles success, partial, and error envelopes per cli-contract.md.
 Partial status means some mutations succeeded, some failed - not an error."
-  (let ((status (alist-get 'status response))
-        (command (alist-get 'command response)))
+  (let ((status (alist-get 'status response)))
     (cond
      ;; Status is returned as string from bridge JSON
      ((string= status "error")
       (let* ((error-obj (alist-get 'error response))
              (code (alist-get 'code error-obj))
-             (message (alist-get 'message error-obj))
-             (details (alist-get 'details error-obj)))
+             (message (alist-get 'message error-obj)))
         (asana-org-log-error "Bridge error [%s]: %s" code message)
         (signal 'asana-org-sync-failed
                 (list (format "[%s] %s" code message)))))
@@ -85,8 +86,7 @@ Partial status means some mutations succeeded, some failed - not an error."
   "Format ERROR-OBJ from bridge for user display.
 Returns a human-readable error message."
   (let ((code (alist-get 'code error-obj))
-        (message (alist-get 'message error-obj))
-        (details (alist-get 'details error-obj)))
+        (message (alist-get 'message error-obj)))
     (pcase code
       ("INVALID_REQUEST"
        (format "Invalid request: %s" message))
@@ -490,6 +490,24 @@ Uses stdin input mode with proper JSON envelope per docs/cli-contract.md."
       (message "Sync status: %d snapshots, %d pending, %d failed — last pull %s"
                snapshots pending failed last-pull))
     response))
+
+;;;; Section Resolution
+
+(defun asana-org-sync--resolve-section-heading (section-gid)
+  "Find the org heading with ASANA_SECTION_GID matching SECTION-GID.
+Searches level-1 headings in the current buffer.
+Return the point position of that heading, or nil if not found.
+Delegates to `asana-org-render--find-section-heading'."
+  (require 'asana-org-render)
+  (asana-org-render--find-section-heading section-gid))
+
+(defun asana-org-sync--section-name-for-gid (section-gid)
+  "Return the heading text of the section with SECTION-GID, or nil."
+  (save-excursion
+    (let ((pos (asana-org-sync--resolve-section-heading section-gid)))
+      (when pos
+        (goto-char pos)
+        (org-get-heading t t t t)))))
 
 ;;;; Clear Pending Changes
 
