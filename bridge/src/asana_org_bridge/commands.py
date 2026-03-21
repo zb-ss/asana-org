@@ -217,7 +217,7 @@ def sync_pull(
     include_comments: bool = typer.Option(
         False,
         "--include-comments",
-        help="Include task comments/stories (reserved for future use)",
+        help="Include task comments/stories in pull results",
     ),
     incomplete_only: bool = typer.Option(
         False,
@@ -264,6 +264,7 @@ def sync_pull(
             limit=limit,
             incomplete_only=incomplete_only,
             modified_since=modified_since,
+            include_comments=include_comments,
         )
 
         if json_output:

@@ -206,6 +206,52 @@ class MockDataGenerator:
 
         return tasks
 
+    @staticmethod
+    def generate_stories(task_gid: str) -> list[dict[str, Any]]:
+        """Generate deterministic mock comment stories for a task.
+
+        Args:
+            task_gid: The task GID to generate stories for
+
+        Returns:
+            List of 2-3 mock comment story dicts
+        """
+        # Use task_gid hash to produce deterministic but varied data
+        seed = int(hashlib.md5(task_gid.encode()).hexdigest()[:8], 16)
+        story_count = 2 + (seed % 2)  # 2 or 3 stories
+
+        authors = [
+            {"gid": "user_001", "name": "Alice Johnson"},
+            {"gid": "user_002", "name": "Bob Smith"},
+            {"gid": "user_003", "name": "Carol Williams"},
+        ]
+
+        comment_templates = [
+            "I've reviewed this and it looks good to proceed.",
+            "Could we schedule a follow-up meeting to discuss the details?",
+            "Updated the timeline based on our latest discussion.",
+            "Added the relevant documentation links.",
+            "Let me know if you need any additional context on this.",
+        ]
+
+        stories: list[dict[str, Any]] = []
+        for i in range(story_count):
+            author = authors[(seed + i) % len(authors)]
+            text = comment_templates[(seed + i) % len(comment_templates)]
+            # Deterministic timestamps: 2026-02-20 + offset based on seed
+            day_offset = (seed + i) % 10
+            hour_offset = (seed + i * 3) % 24
+            created_at = f"2026-02-{20 + day_offset:02d}T{hour_offset:02d}:00:00.000Z"
+
+            stories.append({
+                "gid": f"story_{task_gid}_{i + 1}",
+                "created_by": author,
+                "text": text,
+                "created_at": created_at,
+            })
+
+        return stories
+
 
 class SyncEngine:
     """Main sync engine for pulling and applying changes."""
@@ -277,6 +323,7 @@ class SyncEngine:
         limit: int | None = None,
         incomplete_only: bool = False,
         modified_since: str | None = None,
+        include_comments: bool = False,
     ) -> PullResult:
         """Pull tasks from Asana and update local cache.
 
@@ -285,6 +332,7 @@ class SyncEngine:
             limit: Limit number of tasks to pull
             incomplete_only: Only pull incomplete tasks
             modified_since: Only pull tasks modified after this ISO date
+            include_comments: Fetch and include task comments/stories
 
         Returns:
             PullResult with statistics
@@ -374,6 +422,10 @@ class SyncEngine:
                         result.sections = (
                             MockDataGenerator.generate_sections_by_project()
                         )
+
+                # Fetch comments/stories if requested
+                if include_comments:
+                    self._attach_stories_to_tasks(tasks)
 
                 # Process tasks
                 for task_data in tasks[:limit] if limit else tasks:
@@ -1759,6 +1811,46 @@ class SyncEngine:
                 },
             }
 
+    def _attach_stories_to_tasks(
+        self,
+        tasks: list[dict[str, Any]],
+    ) -> None:
+        """Fetch and attach comment stories to each task in-place.
+
+        Uses the Asana API in live mode or MockDataGenerator in mock mode.
+
+        Args:
+            tasks: List of task dicts to enrich with stories
+        """
+        client = self.asana_client
+        use_mock = self.use_mock or client is None
+
+        for task_data in tasks:
+            task_gid = task_data.get("gid", "")
+            if not task_gid:
+                continue
+
+            try:
+                if use_mock:
+                    stories = MockDataGenerator.generate_stories(task_gid)
+                else:
+                    assert client is not None  # guaranteed by use_mock check
+                    stories = client.get_stories(task_gid)
+
+                task_data["stories"] = stories
+                logger.debug(
+                    "fetched_stories",
+                    task_gid=task_gid,
+                    story_count=len(stories),
+                )
+            except Exception as e:
+                logger.warning(
+                    "stories_fetch_failed",
+                    task_gid=task_gid,
+                    error=str(e),
+                )
+                task_data["stories"] = []
+
     def _upsert_task_snapshot(
         self,
         session: Session,
@@ -1797,6 +1889,10 @@ class SyncEngine:
                 section_gid = first_mem["section"].get("gid")
                 section_name = first_mem["section"].get("name")
 
+        # Serialize stories if present
+        stories_data = task_data.get("stories")
+        stories_json_str = json.dumps(stories_data) if stories_data else None
+
         snapshot = TaskSnapshot(
             gid=gid,
             permalink_url=task_data.get("permalink_url", ""),
@@ -1811,6 +1907,7 @@ class SyncEngine:
             section_gid=section_gid,
             section_name=section_name,
             memberships_json=memberships_json,
+            stories_json=stories_json_str,
             modified_at=modified_at,
         )
 
