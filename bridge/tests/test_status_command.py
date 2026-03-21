@@ -262,7 +262,7 @@ def test_status_last_pull_reflects_most_recent(engine: SyncEngine) -> None:
 
     result = engine.get_status()
     assert result["last_pull_at"] is not None
-    assert result["last_pull_at"] == later.isoformat()
+    assert result["last_pull_at"] == later.replace(tzinfo=None).isoformat()
 
 
 def test_status_schema_version_matches_current(engine: SyncEngine) -> None:
