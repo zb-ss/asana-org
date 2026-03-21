@@ -5,10 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from asana_org_bridge.asana_client import AsanaClient, create_asana_client
@@ -61,6 +62,16 @@ class ApplyResult:
     errors: list[str] = field(default_factory=list)
     # JSON contract fields
     results_json: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class PruneResult:
+    """Result of a cache prune operation."""
+
+    snapshots_deleted: int = 0
+    sync_runs_deleted: int = 0
+    mutations_deleted: int = 0
+    dry_run: bool = False
 
 
 class MockDataGenerator:
@@ -2370,3 +2381,107 @@ class SyncEngine:
         )
 
         session.add(snapshot)
+
+    def prune_cache(self, dry_run: bool = False) -> PruneResult:
+        """Prune old cache entries based on retention policy.
+
+        Deletes old snapshots, sync runs, and completed mutations
+        according to configured retention periods. Always keeps the
+        most recent snapshot per task GID and never deletes snapshots
+        referenced by pending/failed mutations.
+
+        Args:
+            dry_run: If True, count what would be deleted without deleting
+
+        Returns:
+            PruneResult with deletion counts
+        """
+        settings = get_settings()
+        result = PruneResult(dry_run=dry_run)
+        now = datetime.now(UTC)
+
+        snapshot_cutoff = now - timedelta(days=settings.sync.snapshot_retention_days)
+        journal_cutoff = now - timedelta(days=settings.sync.journal_retention_days)
+        audit_cutoff = now - timedelta(days=settings.sync.audit_retention_days)
+
+        with self.db.session() as session:
+            # --- Snapshots ---
+            # Find the most recent snapshot ID per task GID (always kept)
+            latest_per_task = (
+                session.query(func.max(TaskSnapshot.id))
+                .group_by(TaskSnapshot.gid)
+                .all()
+            )
+            protected_snapshot_ids = {row[0] for row in latest_per_task}
+
+            # Find task GIDs referenced by pending/failed mutations
+            protected_task_gids_rows = (
+                session.query(PendingMutation.task_gid)
+                .filter(PendingMutation.status.in_(["pending", "failed"]))
+                .distinct()
+                .all()
+            )
+            protected_task_gids = {row[0] for row in protected_task_gids_rows}
+
+            # Find snapshot IDs for protected task GIDs (all snapshots for those tasks)
+            if protected_task_gids:
+                protected_by_mutation_rows = (
+                    session.query(TaskSnapshot.id)
+                    .filter(TaskSnapshot.gid.in_(protected_task_gids))
+                    .all()
+                )
+                protected_snapshot_ids.update(
+                    row[0] for row in protected_by_mutation_rows
+                )
+
+            # Query old snapshots eligible for deletion
+            old_snapshots_query = session.query(TaskSnapshot).filter(
+                TaskSnapshot.snapshot_at < snapshot_cutoff,
+            )
+            if protected_snapshot_ids:
+                old_snapshots_query = old_snapshots_query.filter(
+                    TaskSnapshot.id.notin_(protected_snapshot_ids),
+                )
+
+            if dry_run:
+                result.snapshots_deleted = old_snapshots_query.count()
+            else:
+                result.snapshots_deleted = old_snapshots_query.delete(
+                    synchronize_session="fetch"
+                )
+
+            # --- Sync Runs ---
+            old_runs_query = session.query(SyncRun).filter(
+                SyncRun.started_at < journal_cutoff,
+            )
+
+            if dry_run:
+                result.sync_runs_deleted = old_runs_query.count()
+            else:
+                result.sync_runs_deleted = old_runs_query.delete(
+                    synchronize_session="fetch"
+                )
+
+            # --- Completed Mutations ---
+            # Only delete completed/succeeded mutations; never pending/failed
+            old_mutations_query = session.query(PendingMutation).filter(
+                PendingMutation.created_at < audit_cutoff,
+                PendingMutation.status.notin_(["pending", "failed"]),
+            )
+
+            if dry_run:
+                result.mutations_deleted = old_mutations_query.count()
+            else:
+                result.mutations_deleted = old_mutations_query.delete(
+                    synchronize_session="fetch"
+                )
+
+        logger.info(
+            "cache_prune_completed",
+            dry_run=dry_run,
+            snapshots_deleted=result.snapshots_deleted,
+            sync_runs_deleted=result.sync_runs_deleted,
+            mutations_deleted=result.mutations_deleted,
+        )
+
+        return result
