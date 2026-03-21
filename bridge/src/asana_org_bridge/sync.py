@@ -345,6 +345,7 @@ class SyncEngine:
         incomplete_only: bool = False,
         modified_since: str | None = None,
         include_comments: bool = False,
+        project_gid: str | None = None,
     ) -> PullResult:
         """Pull tasks from Asana and update local cache.
 
@@ -354,6 +355,7 @@ class SyncEngine:
             incomplete_only: Only pull incomplete tasks
             modified_since: Only pull tasks modified after this ISO date
             include_comments: Fetch and include task comments/stories
+            project_gid: Filter tasks to only those belonging to this project
 
         Returns:
             PullResult with statistics
@@ -444,6 +446,24 @@ class SyncEngine:
                             MockDataGenerator.generate_sections_by_project()
                         )
 
+                # Filter by project membership if requested
+                if project_gid:
+                    pre_filter_count = len(tasks)
+                    tasks = [
+                        t
+                        for t in tasks
+                        if any(
+                            m.get("project", {}).get("gid") == project_gid
+                            for m in t.get("memberships", [])
+                        )
+                    ]
+                    logger.info(
+                        "project_filter_applied",
+                        project_gid=project_gid,
+                        before=pre_filter_count,
+                        after=len(tasks),
+                    )
+
                 # Fetch comments/stories if requested
                 if include_comments:
                     self._attach_stories_to_tasks(tasks)
@@ -471,6 +491,28 @@ class SyncEngine:
                 result.errors.append(str(e))
                 logger.error("pull_failed", error=str(e))
                 raise
+
+        # Auto-prune on every 10th successful pull
+        if run.status == "completed":
+            try:
+                with self.db.session() as session:
+                    pull_count = (
+                        session.query(func.count(SyncRun.id))
+                        .filter(
+                            SyncRun.run_type == "pull",
+                            SyncRun.status == "completed",
+                        )
+                        .scalar()
+                    ) or 0
+
+                if pull_count > 0 and pull_count % 10 == 0:
+                    logger.info(
+                        "auto_prune_triggered",
+                        pull_count=pull_count,
+                    )
+                    self.prune_cache(dry_run=False)
+            except Exception:
+                logger.warning("auto_prune_failed", exc_info=True)
 
         return result
 
