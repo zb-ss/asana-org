@@ -193,8 +193,7 @@
 
 (defun asana-org-transient-setup-keybindings ()
   "Setup global keybindings for Asana Org transients."
-  (define-key global-map (kbd "C-c a") 'asana-org-transient)
-  (define-key global-map (kbd "C-c s a") 'asana-org-sync-transient))
+  (define-key global-map (kbd "C-c a") 'asana-org-transient))
 
 (provide 'asana-org-transient)
 
