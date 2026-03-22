@@ -443,7 +443,7 @@ By default pulls only incomplete tasks."
 
   ;; Check for first pull: no .org files in root directory yet
   (let* ((is-first-pull (null (directory-files asana-org-root-directory nil "\\.org$")))
-         (args (list "sync-pull" "--json" "--incomplete-only")))
+         (args (list "sync-pull" "--json" "--incomplete-only" "--include-comments")))
     (when project-gid
       (setq args (append args (list "--project" project-gid))))
     (let* ((response (apply #'asana-org-call-json args))
