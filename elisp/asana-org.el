@@ -643,13 +643,20 @@ Uses bridge \\='comment-append\\=' command per cli-contract.md."
 
 ;;;###autoload
 (defun asana-org-ai-summary (&optional task-gids)
-  "Generate AI summary for tasks at point or given TASK-GIDS."
+  "Generate AI summary for tasks at point or given TASK-GIDS.
+When called interactively without point on a task, prompts for GIDs."
   (interactive)
   (let* ((gids (or task-gids
-                   (list (asana-org-get-property asana-org-prop-gid))))
-         (args (append (list "ai-summary") gids (list "--json")))
-         (response (apply #'asana-org-call-json args)))
-    (asana-org-render-ai-summary (cdr (assq 'data response)))))
+                   (when-let ((gid (asana-org-get-property asana-org-prop-gid)))
+                     (list gid))
+                   (let ((input (read-string "Task GID(s), space-separated: ")))
+                     (split-string input " " t)))))
+    (unless gids
+      (user-error "No task GIDs provided"))
+    (message "Generating AI summary for %d task(s)..." (length gids))
+    (let* ((args (append (list "ai-summary") gids (list "--json")))
+           (response (apply #'asana-org-call-json args)))
+      (asana-org-render-ai-summary (cdr (assq 'data response))))))
 
 ;;;; Rendering Helpers
 ;; Real implementations live in asana-org-render.el, loaded via

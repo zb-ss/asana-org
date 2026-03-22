@@ -100,13 +100,16 @@
   (asana-org-comment-append task-gid comment))
 
 (transient-define-suffix asana-org-transient-ai-summary ()
-  "Generate AI summary for task at point."
+  "Generate AI summary for task at point, or prompt for GIDs."
   :key "i"
   (interactive)
   (let ((task-gid (asana-org-get-property asana-org-prop-gid)))
     (unless task-gid
-      (user-error "No ASANA_GID property found at point"))
-    (asana-org-ai-summary (list task-gid))))
+      (setq task-gid (read-string "Task GID(s), space-separated: ")))
+    (let ((gids (if (string-match-p " " task-gid)
+                    (split-string task-gid " " t)
+                  (list task-gid))))
+      (asana-org-ai-summary gids))))
 
 (transient-define-suffix asana-org-transient-status ()
   "Show sync health status."
