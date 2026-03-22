@@ -446,6 +446,7 @@ By default pulls only incomplete tasks."
          (args (list "sync-pull" "--json" "--incomplete-only" "--include-comments")))
     (when project-gid
       (setq args (append args (list "--project" project-gid))))
+    (message "Asana Org: Pulling tasks from Asana (with comments)...")
     (let* ((response (apply #'asana-org-call-json args))
            (data (alist-get 'data response))
            (tasks (alist-get 'tasks data))
