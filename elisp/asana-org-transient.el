@@ -173,6 +173,7 @@
     ("C" "Configure" asana-org-transient-configure)]
    [("q" "Quit" transient-quit-one)]]
   (interactive)
+  (require 'asana-org)
   (transient-setup 'asana-org-transient))
 
 ;;;; Sync-Specific Transient (Pull/Preview/Apply flow)
