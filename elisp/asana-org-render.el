@@ -156,12 +156,16 @@ Convert :json-false and :json-null to nil so that
   (when comments
     (concat ":" asana-org-comments-drawer ":\n"
             (mapconcat (lambda (comment)
-                         (let ((author (alist-get 'created_by comment))
-                               (text (alist-get 'text comment))
-                               (created (alist-get 'created_at comment)))
+                         (let* ((author-obj (alist-get 'created_by comment))
+                                (author (cond
+                                         ((stringp author-obj) author-obj)
+                                         ((listp author-obj) (or (alist-get 'name author-obj) "unknown"))
+                                         (t "unknown")))
+                                (text (alist-get 'text comment))
+                                (created (alist-get 'created_at comment)))
                            (format "- [%s] %s: %s"
                                    (substring created 0 10)
-                                   (if (stringp author) author "unknown")
+                                   author
                                    text)))
                        comments "\n")
             ":END:\n")))
