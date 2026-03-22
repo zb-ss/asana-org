@@ -175,26 +175,9 @@ Structure: ((:id . \"pc_001\") (:type . \"task_move\") ...)")
 
 ;;;; Direct Command Functions
 
-(defun asana-org-sync-pull (&optional project-gid include-comments)
-  "Pull tasks from Asana, optionally filtered by PROJECT-GID.
-INCLUDE-COMMENTS if non-nil includes task stories (reserved for future use).
-Returns the response envelope with tasks in data.tasks array."
-  (interactive)
-  (asana-org-log-info "Sync pull: project=%s" (or project-gid "all"))
-  (let* ((args (asana-org-sync--build-sync-pull-args project-gid include-comments))
-          (response (apply #'asana-org-call-json args))
-          (data (asana-org-sync--parse-response response))
-          ;; Tasks array is in data.tasks per cli-contract.md
-          (tasks (alist-get 'tasks data))
-          (summary (alist-get 'summary data)))
-    (asana-org-log-info "Pulled %d tasks" (length tasks))
-    (when (called-interactively-p 'any)
-      (if summary
-          (message "Pulled %d tasks from Asana (%d updated)"
-                   (or (alist-get 'pulled summary) (length tasks))
-                   (or (alist-get 'updated summary) 0))
-        (message "Pulled %d tasks from Asana" (length tasks))))
-    response))
+;; asana-org-sync-pull is defined in asana-org.el as the primary pull
+;; command.  It handles --incomplete-only, --include-comments, rendering
+;; tasks to org files, and opening the result.  Do not redefine it here.
 
 (defun asana-org-sync-preview (&optional dry-run since)
   "Preview pending changes.
