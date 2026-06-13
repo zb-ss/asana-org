@@ -127,7 +127,7 @@ def test_ai_config_defaults() -> None:
     config = AIConfig()
     assert config.enabled is False
     assert config.model == "gemini-3-flash-preview"
-    assert config.api_key_pass_path == "api.gemini.ai/z-first-key"
+    assert config.api_key_pass_path == "asana-org/ai-api-key"
     assert config.api_key is None
 
 

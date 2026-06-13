@@ -1,0 +1,11 @@
+# Licensing
+
+This repository is dual-licensed. Each component carries its own license:
+
+- **Elisp package** (`elisp/`) — GPL-3.0-or-later. See [`elisp/LICENSE`](elisp/LICENSE).
+- **Bridge CLI** (`bridge/`) — MIT. See [`bridge/LICENSE`](bridge/LICENSE).
+
+Documentation and other top-level files follow the license of the component
+they describe; where ambiguous, the GPL-3.0-or-later terms apply.
+
+Copyright (c) 2025 Asana Org contributors.

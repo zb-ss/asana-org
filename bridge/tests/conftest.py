@@ -2,9 +2,23 @@
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def isolate_asana_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Clear Asana-related env vars so tests are hermetic.
+
+    Without this, a developer or CI environment that exports ``ASANA_PAT``
+    (or any ``ASANA_ORG_*`` override) would leak real configuration into the
+    config/auth tests and cause spurious failures.
+    """
+    for key in list(os.environ):
+        if key == "ASANA_PAT" or key.startswith("ASANA_ORG_"):
+            monkeypatch.delenv(key, raising=False)
 
 
 @pytest.fixture

@@ -54,7 +54,7 @@ ln -sf "$(pwd)/.venv/bin/asana-org-bridge" ~/.local/bin/asana-org-bridge
 
 > **Note**: Ensure `~/.local/bin` is in your `PATH`. Add `export PATH="$HOME/.local/bin:$PATH"` to your shell profile if needed.
 
-Alternatively, install globally with [pipx](https://pypa.github.io/pipx/):
+Alternatively, once the bridge is published to PyPI (see [Release & Distribution](#release--distribution)), install globally with [pipx](https://pypa.github.io/pipx/):
 ```bash
 pipx install asana-org-bridge
 ```
@@ -158,6 +158,11 @@ Detailed documentation is available in the `docs/` directory:
 -   `comment-append`: Add a comment to a task.
 -   `cache-prune`: Prune old cache entries per retention policy.
 -   `status`: Show sync health diagnostics.
+-   `validate`: Validate org task states against cached snapshots (reports mismatches and orphans).
+-   `reconcile`: Reconcile local snapshots against current remote Asana state.
+-   `rebuild-cache`: Rebuild the local snapshot cache from scratch.
+-   `relink`: Update the stored permalink URL for a task.
+-   `ai-summary`: Generate an AI summary for one or more tasks (optional, requires AI config).
 
 ### Emacs (via `C-c a`)
 -   `p`: **Pull** (`asana-org-sync-pull`)
@@ -173,8 +178,8 @@ Detailed documentation is available in the `docs/` directory:
 We follow [SemVer](https://semver.org/) and are working towards a stable 1.0 release.
 
 - **GitHub**: Primary source for code and [releases](https://github.com/zb-ss/asana-org/releases).
-- **PyPI**: Bridge CLI published automatically on GitHub Release. Install: `pipx install asana-org-bridge`.
-- **MELPA**: Awaiting initial manual recipe submission. After that, package updates automatically from source.
+- **PyPI**: Not yet published. A GitHub Release will publish the bridge CLI to PyPI automatically (workflow configured); after the first release, install via `pipx install asana-org-bridge`.
+- **MELPA**: Awaiting initial manual recipe submission. After that, the package updates automatically from source.
 
 See **[Release Process](docs/release.md)** for full details on publishing and distribution.
 

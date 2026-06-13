@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [
-    { name = "zashboy", email = "zashboy@localhost" }
+    { name = "zb-ss", email = "zb-ss@users.noreply.github.com" }
 ]
 repository = "https://github.com/zb-ss/asana-org"
 keywords = ["asana", "org-mode", "emacs", "sync", "bridge"]
@@ -61,6 +61,10 @@ line-length = 88
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM"]
 ignore = ["E501"]
+
+[tool.ruff.lint.flake8-bugbear]
+# typer uses Argument()/Option() calls as parameter defaults by design
+extend-immutable-calls = ["typer.Argument", "typer.Option"]
 
 [tool.mypy]
 python_version = "3.11"

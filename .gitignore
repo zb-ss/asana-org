@@ -2,6 +2,16 @@
 .env
 .env.*
 
+# AI assistant / MCP config (machine-specific, internal paths — never publish)
+CLAUDE.md
+GEMINI.md
+AGENTS.md
+.cursorrules
+.windsurfrules
+.clinerules
+.mcp.json
+.claude/
+
 # Python
 bridge/.venv/
 bridge/__pycache__/
