@@ -6,7 +6,6 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from asana_org_bridge.config import SyncConfig, reload_settings
 from asana_org_bridge.db import Database, MigrationManager
 from asana_org_bridge.models import PendingMutation, SyncRun, TaskSnapshot
 from asana_org_bridge.sync import SyncEngine

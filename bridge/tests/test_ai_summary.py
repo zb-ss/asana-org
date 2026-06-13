@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-from typing import Any, cast
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -15,7 +15,6 @@ from asana_org_bridge.ai_client import (
     get_api_key,
 )
 from asana_org_bridge.config import AIConfig
-
 
 # ---------------------------------------------------------------------------
 # GeminiClient tests
@@ -73,9 +72,11 @@ class TestGeminiClientSummarize:
             json_data={"error": {"message": "Internal error"}},
         )
 
-        with patch("asana_org_bridge.ai_client.requests.post", return_value=fake_resp):
-            with pytest.raises(GeminiAPIError) as exc:
-                client.summarize("prompt")
+        with (
+            patch("asana_org_bridge.ai_client.requests.post", return_value=fake_resp),
+            pytest.raises(GeminiAPIError) as exc,
+        ):
+            client.summarize("prompt")
 
         assert exc.value.status_code == 500
         assert "Internal error" in exc.value.message
@@ -88,9 +89,11 @@ class TestGeminiClientSummarize:
             json_data={},
         )
 
-        with patch("asana_org_bridge.ai_client.requests.post", return_value=fake_resp):
-            with pytest.raises(GeminiAPIError) as exc:
-                client.summarize("prompt")
+        with (
+            patch("asana_org_bridge.ai_client.requests.post", return_value=fake_resp),
+            pytest.raises(GeminiAPIError) as exc,
+        ):
+            client.summarize("prompt")
 
         assert exc.value.status_code == 429
         assert "rate limit" in exc.value.message.lower()
@@ -103,9 +106,11 @@ class TestGeminiClientSummarize:
             json_data={"candidates": []},
         )
 
-        with patch("asana_org_bridge.ai_client.requests.post", return_value=fake_resp):
-            with pytest.raises(GeminiAPIError, match="no candidates"):
-                client.summarize("prompt")
+        with (
+            patch("asana_org_bridge.ai_client.requests.post", return_value=fake_resp),
+            pytest.raises(GeminiAPIError, match="no candidates"),
+        ):
+            client.summarize("prompt")
 
     def test_malformed_response(self) -> None:
         """Missing content parts raises GeminiAPIError."""
@@ -115,9 +120,11 @@ class TestGeminiClientSummarize:
             json_data={"candidates": [{"content": {}}]},
         )
 
-        with patch("asana_org_bridge.ai_client.requests.post", return_value=fake_resp):
-            with pytest.raises(GeminiAPIError, match="Unexpected.*response structure"):
-                client.summarize("prompt")
+        with (
+            patch("asana_org_bridge.ai_client.requests.post", return_value=fake_resp),
+            pytest.raises(GeminiAPIError, match="Unexpected.*response structure"),
+        ):
+            client.summarize("prompt")
 
 
 # ---------------------------------------------------------------------------
@@ -154,9 +161,8 @@ class TestGetApiKey:
         with patch(
             "asana_org_bridge.ai_client.subprocess.run",
             side_effect=FileNotFoundError("pass not found"),
-        ):
-            with pytest.raises(RuntimeError, match="No Gemini API key"):
-                get_api_key(config)
+        ), pytest.raises(RuntimeError, match="No Gemini API key"):
+            get_api_key(config)
 
     def test_pass_timeout(self) -> None:
         """RuntimeError raised when pass command times out."""
@@ -165,9 +171,8 @@ class TestGetApiKey:
         with patch(
             "asana_org_bridge.ai_client.subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd="pass", timeout=10),
-        ):
-            with pytest.raises(RuntimeError, match="No Gemini API key"):
-                get_api_key(config)
+        ), pytest.raises(RuntimeError, match="No Gemini API key"):
+            get_api_key(config)
 
 
 # ---------------------------------------------------------------------------
@@ -211,9 +216,9 @@ class TestSyncEngineAiSummaryLive:
 
     def test_live_mode_calls_gemini(self) -> None:
         """Live mode builds prompt from snapshots and calls Gemini."""
+
         from asana_org_bridge.models import TaskSnapshot
         from asana_org_bridge.sync import SyncEngine
-        from datetime import UTC, datetime
 
         # Mock database session with a snapshot
         mock_snapshot = MagicMock(spec=TaskSnapshot)
@@ -248,13 +253,12 @@ class TestSyncEngineAiSummaryLive:
         with patch(
             "asana_org_bridge.ai_client.create_gemini_client",
             return_value=mock_gemini,
-        ):
-            with patch("asana_org_bridge.sync.get_settings") as mock_settings:
-                mock_settings.return_value.ai.model = "test-model"
-                result = engine.ai_summary(
-                    task_gids=["task_001"],
-                    include_notes=True,
-                )
+        ), patch("asana_org_bridge.sync.get_settings") as mock_settings:
+            mock_settings.return_value.ai.model = "test-model"
+            result = engine.ai_summary(
+                task_gids=["task_001"],
+                include_notes=True,
+            )
 
         assert result["summary"] == "AI generated summary text"
         assert result["task_count"] == 1
@@ -276,6 +280,7 @@ class TestAiSummaryCLI:
     def test_json_output_format_mock(self) -> None:
         """CLI outputs correct JSON envelope in mock mode."""
         from typer.testing import CliRunner
+
         from asana_org_bridge.commands import app
 
         runner = CliRunner()
@@ -306,6 +311,7 @@ class TestAiSummaryCLI:
     def test_json_output_multiple_tasks(self) -> None:
         """CLI handles multiple task GIDs."""
         from typer.testing import CliRunner
+
         from asana_org_bridge.commands import app
 
         runner = CliRunner()
@@ -333,6 +339,7 @@ class TestAiSummaryCLI:
     def test_rich_output_mock(self) -> None:
         """CLI produces readable rich output without --json."""
         from typer.testing import CliRunner
+
         from asana_org_bridge.commands import app
 
         runner = CliRunner()

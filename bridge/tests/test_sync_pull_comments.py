@@ -14,7 +14,6 @@ from asana_org_bridge.db import Database, MigrationManager
 from asana_org_bridge.models import TaskSnapshot
 from asana_org_bridge.sync import MockDataGenerator, SyncEngine
 
-
 # ---------- helpers / fakes ----------
 
 

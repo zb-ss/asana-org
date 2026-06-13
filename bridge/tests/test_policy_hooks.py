@@ -145,9 +145,10 @@ def test_custom_allow_field_write_blocks_mutation(
     class FieldRestrictedEngine(SyncEngine):
         def allow_field_write(self, field_name: str, task_gid: str) -> bool:
             # Block all date changes for task_locked_001
-            if task_gid == "task_locked_001" and field_name in ("due_on", "start_on"):
-                return False
-            return True
+            return not (
+                task_gid == "task_locked_001"
+                and field_name in ("due_on", "start_on")
+            )
 
     engine = FieldRestrictedEngine(
         db=database, auth_manager=auth_manager, use_mock=True

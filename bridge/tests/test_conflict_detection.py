@@ -53,7 +53,7 @@ def _make_fake_client(
         def __init__(self) -> None:
             self.update_calls: list[dict[str, Any]] = []
 
-        def get_task(
+        def get_task_raw(
             self, task_gid: str, opt_fields: str | None = None
         ) -> dict[str, Any]:
             return remote_task
@@ -460,7 +460,7 @@ def test_multiple_mutations_mixed_conflict_states(
         def __init__(self) -> None:
             self.update_calls: list[str] = []
 
-        def get_task(
+        def get_task_raw(
             self, task_gid: str, opt_fields: str | None = None
         ) -> dict[str, Any]:
             if task_gid == "task_conflict":

@@ -897,7 +897,7 @@ class SyncEngine:
             Conflict/warning dict, or None if clean
         """
         try:
-            remote_task = client.get_task(task_gid)
+            remote_task = client.get_task_raw(task_gid)
         except Exception as e:
             logger.warning(
                 "conflict_check_remote_fetch_failed",
@@ -1322,10 +1322,10 @@ class SyncEngine:
         if not project_gid:
             return None
 
-        project_name = project_gid
+        project_name = str(project_gid)
         for proj in MockDataGenerator.MOCK_PROJECTS:
             if proj["gid"] == project_gid:
-                project_name = proj["name"]
+                project_name = str(proj["name"])
                 break
 
         valid_sections = [
@@ -1455,8 +1455,8 @@ class SyncEngine:
     # --- Policy hook methods (override in subclasses) ---
 
     def pre_apply_guard(
-        self, mutations: list[dict]
-    ) -> tuple[list[dict], list[dict], str | None]:
+        self, mutations: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
         """Filter mutations before applying.
 
         Called at the beginning of apply_from_json after validation, before
@@ -1494,7 +1494,7 @@ class SyncEngine:
         )
         return True
 
-    def redact_outbound_payload(self, record: dict) -> dict:
+    def redact_outbound_payload(self, record: dict[str, Any]) -> dict[str, Any]:
         """Redact sensitive fields from a task record before sending externally.
 
         Intended for use when sending task data to AI providers or other
@@ -2665,7 +2665,9 @@ class SyncEngine:
                 .first()
             )
             last_pull_at = (
-                last_pull_run.completed_at.isoformat() if last_pull_run else None
+                last_pull_run.completed_at.isoformat()
+                if last_pull_run and last_pull_run.completed_at
+                else None
             )
 
             # Last completed apply
@@ -2676,7 +2678,9 @@ class SyncEngine:
                 .first()
             )
             last_apply_at = (
-                last_apply_run.completed_at.isoformat() if last_apply_run else None
+                last_apply_run.completed_at.isoformat()
+                if last_apply_run and last_apply_run.completed_at
+                else None
             )
 
             # Snapshot counts

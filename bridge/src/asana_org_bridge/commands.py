@@ -1254,12 +1254,15 @@ def rebuild_cache(
     safety prompt.
     """
     try:
-        if confirm and not json_output:
-            if not typer.confirm(
+        if (
+            confirm
+            and not json_output
+            and not typer.confirm(
                 "This will delete all cached snapshots and rebuild from remote. Continue?"
-            ):
-                console.print("Cancelled.")
-                raise typer.Exit(code=0)
+            )
+        ):
+            console.print("Cancelled.")
+            raise typer.Exit(code=0)
 
         engine = get_sync_engine()
         rb_result = engine.rebuild_cache()

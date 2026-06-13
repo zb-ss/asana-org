@@ -7,7 +7,7 @@ consistency across the bridge pipeline.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo
@@ -18,7 +18,6 @@ from asana_org_bridge.asana_client import AsanaClient, AsanaTask
 from asana_org_bridge.db import Database, MigrationManager
 from asana_org_bridge.models import TaskSnapshot
 from asana_org_bridge.sync import SyncEngine
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

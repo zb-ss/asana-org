@@ -345,33 +345,6 @@ class AsanaClient:
             memberships=data.get("memberships", []),
         )
 
-    def get_task(
-        self,
-        task_gid: str,
-        opt_fields: str | None = None,
-    ) -> dict[str, Any]:
-        """Fetch a single task by GID.
-
-        Args:
-            task_gid: Task GID to fetch
-            opt_fields: Optional comma-separated fields to request
-
-        Returns:
-            Raw task data dictionary from the API
-
-        Raises:
-            AsanaAPIError: If the API call fails
-        """
-        if opt_fields is None:
-            opt_fields = self.TASK_FIELDS
-
-        response = self._request(
-            "GET",
-            f"/tasks/{task_gid}",
-            params={"opt_fields": opt_fields},
-        )
-        return cast(dict[str, Any], response.get("data", {}))
-
     def update_task(
         self,
         task_gid: str,
@@ -682,6 +655,34 @@ class AsanaClient:
         }
         response = self._request("GET", f"/tasks/{task_gid}", params=params)
         return self._parse_task(response.get("data", {}))
+
+    def get_task_raw(
+        self,
+        task_gid: str,
+        opt_fields: str | None = None,
+    ) -> dict[str, Any]:
+        """Fetch a single task by GID as the raw API data dictionary.
+
+        Unlike :meth:`get_task`, this returns the unparsed task payload with
+        the original Asana field names (e.g. ``modified_at`` as an ISO
+        string). Used by conflict detection, which compares raw remote
+        field values against local snapshots.
+
+        Args:
+            task_gid: Task GID to fetch
+            opt_fields: Optional comma-separated fields to request
+
+        Returns:
+            Raw task data dictionary from the API
+
+        Raises:
+            AsanaAPIError: If the API call fails
+        """
+        params: dict[str, Any] = {
+            "opt_fields": opt_fields or self.TASK_FIELDS,
+        }
+        response = self._request("GET", f"/tasks/{task_gid}", params=params)
+        return cast(dict[str, Any], response.get("data", {}))
 
     def close(self) -> None:
         """Close the client session."""
