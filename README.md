@@ -1,10 +1,10 @@
 # Asana ↔ Org-mode Integration
 
-A powerful, bidirectional synchronization tool between Asana and Emacs Org-mode.
+A bidirectional synchronization tool between Asana and Emacs Org-mode.
 
 ## Overview
 
-This project provides a robust bridge between Asana tasks and Org-mode files. Manage your Asana tasks directly from Emacs, leveraging Org-mode for scheduling, notes, and task management.
+This project provides a bridge between Asana tasks and Org-mode files. Manage your Asana tasks directly from Emacs, leveraging Org-mode for scheduling, notes, and task management.
 
 The system consists of:
 1.  **`asana-org-bridge`**: A Python CLI handling the Asana REST API and local SQLite caching.
